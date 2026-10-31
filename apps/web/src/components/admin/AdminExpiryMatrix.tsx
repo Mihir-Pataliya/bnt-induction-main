@@ -1,0 +1,358 @@
+import React, { useState, useMemo } from "react";
+import { useTranslation } from "react-i18next";
+import { AdminDriverRow } from "../../types";
+import {
+  CalendarClock,
+  AlertTriangle,
+  CheckCircle2,
+  XCircle,
+  Bell,
+  Search,
+  Truck,
+  FileText,
+  Send
+} from "lucide-react";
+
+interface AdminExpiryMatrixProps {
+  drivers: AdminDriverRow[];
+  onNotifyDriver: (
+    driverId: string,
+    email: string,
+    driverName: string,
+    documentType: string,
+    expiryDate: string,
+    eventType: "document_expiring" | "induction_expiring"
+  ) => Promise<void>;
+}
+
+interface ExpiryItem {
+  driverId: string;
+  driverName: string;
+  driverEmail: string;
+  docType: string;
+  expiryDateStr: string;
+  expiryDate: string;
+  daysRemaining: number;
+  urgency: "Expired" | "Urgent (< 14d)" | "Upcoming (< 30d)" | "Valid";
+  eventType: "document_expiring" | "induction_expiring";
+}
+
+export const AdminExpiryMatrix: React.FC<AdminExpiryMatrixProps> = ({
+  drivers,
+  onNotifyDriver
+}) => {
+  const { t } = useTranslation();
+  const [searchTerm, setSearchTerm] = useState("");
+  const [filterUrgency, setFilterUrgency] = useState<string>("All");
+  const [notifiedDrivers, setNotifiedDrivers] = useState<Set<string>>(new Set());
+  const [sendingReminders, setSendingReminders] = useState<Set<string>>(new Set());
+
+  // Derive real-time expiry computations from live driver records
+  const expiryItems = useMemo(() => {
+    const items: ExpiryItem[] = [];
+    const now = new Date().getTime();
+
+    drivers.forEach((driver) => {
+      // Check each uploaded document on the driver
+      if (driver.documents && driver.documents.length > 0) {
+        driver.documents.forEach((doc) => {
+          if (doc.expiresAt) {
+            const expTime = new Date(doc.expiresAt).getTime();
+            const diffDays = Math.ceil((expTime - now) / (1000 * 60 * 60 * 24));
+            let urgency: ExpiryItem["urgency"] = "Valid";
+            if (diffDays < 0) urgency = "Expired";
+            else if (diffDays <= 14) urgency = "Urgent (< 14d)";
+            else if (diffDays <= 30) urgency = "Upcoming (< 30d)";
+
+            const docLabel =
+              doc.type === "driver_license"
+                ? t("exp_doc_licence")
+                : doc.type === "medical_certificate"
+                ? t("exp_doc_medical")
+                : doc.type === "dangerous_goods_license"
+                ? t("exp_doc_dg")
+                : t("exp_doc_compliance");
+
+            items.push({
+              driverId: driver.id,
+              driverName: driver.fullName,
+              driverEmail: driver.email,
+              docType: docLabel,
+              expiryDateStr: doc.expiresAt.split("T")[0],
+              expiryDate: doc.expiresAt,
+              daysRemaining: diffDays,
+              urgency,
+              eventType: "document_expiring"
+            });
+          }
+        });
+      }
+
+      // If driver has an induction completion timestamp, compute annual refresher expiry (365 days)
+      if (driver.completedAt) {
+        const completedTime = new Date(driver.completedAt).getTime();
+        const refresherDueTime = completedTime + 365 * 24 * 60 * 60 * 1000;
+        const diffDays = Math.ceil((refresherDueTime - now) / (1000 * 60 * 60 * 24));
+        let urgency: ExpiryItem["urgency"] = "Valid";
+        if (diffDays < 0) urgency = "Expired";
+        else if (diffDays <= 14) urgency = "Urgent (< 14d)";
+        else if (diffDays <= 30) urgency = "Upcoming (< 30d)";
+
+        items.push({
+          driverId: driver.id,
+          driverName: driver.fullName,
+          driverEmail: driver.email,
+          docType: t("exp_doc_refresher"),
+          expiryDateStr: new Date(refresherDueTime).toISOString().split("T")[0],
+          expiryDate: new Date(refresherDueTime).toISOString(),
+          daysRemaining: diffDays,
+          urgency,
+          eventType: "induction_expiring"
+        });
+      }
+    });
+
+    return items.sort((a, b) => a.daysRemaining - b.daysRemaining);
+  }, [drivers]);
+
+  const filteredItems = useMemo(() => {
+    return expiryItems.filter((item) => {
+      const matchesSearch =
+        item.driverName.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        item.driverEmail.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        item.docType.toLowerCase().includes(searchTerm.toLowerCase());
+
+      if (!matchesSearch) return false;
+      if (filterUrgency === "All") return true;
+      if (filterUrgency === "ActionRequired") return item.daysRemaining <= 30;
+      return item.urgency === filterUrgency;
+    });
+  }, [expiryItems, searchTerm, filterUrgency]);
+
+  const expiredCount = expiryItems.filter((i) => i.daysRemaining < 0).length;
+  const urgentCount = expiryItems.filter((i) => i.daysRemaining >= 0 && i.daysRemaining <= 14).length;
+  const upcomingCount = expiryItems.filter((i) => i.daysRemaining > 14 && i.daysRemaining <= 30).length;
+
+  const filterLabels: Record<string, string> = {
+    All: t("exp_filter_all"),
+    ActionRequired: t("exp_filter_action"),
+    Expired: t("exp_filter_expired"),
+    "Urgent (< 14d)": t("exp_filter_urgent"),
+    "Upcoming (< 30d)": t("exp_filter_upcoming")
+  };
+
+  const urgencyLabels: Record<string, string> = {
+    Expired: t("exp_filter_expired"),
+    "Urgent (< 14d)": t("exp_filter_urgent"),
+    "Upcoming (< 30d)": t("exp_filter_upcoming"),
+    Valid: t("exp_valid")
+  };
+
+  const getItemKey = (item: ExpiryItem) => `${item.driverId}_${item.docType}_${item.expiryDateStr}`;
+
+  const handleSendReminder = async (item: ExpiryItem) => {
+    const itemKey = getItemKey(item);
+    if (sendingReminders.has(itemKey)) return;
+    setSendingReminders((previous) => new Set(previous).add(itemKey));
+    try {
+      await onNotifyDriver(
+        item.driverId,
+        item.driverEmail,
+        item.driverName,
+        item.docType,
+        item.expiryDate,
+        item.eventType
+      );
+      setNotifiedDrivers((previous) => new Set(previous).add(itemKey));
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "The reminder could not be sent.");
+    } finally {
+      setSendingReminders((previous) => {
+        const next = new Set(previous);
+        next.delete(itemKey);
+        return next;
+      });
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* Expiry Overview Stats Row */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <div className="glass p-4 rounded-2xl border border-rose-500/30 flex items-center gap-3">
+          <div className="w-12 h-12 rounded-xl bg-rose-500/10 flex items-center justify-center text-rose-500">
+            <XCircle className="w-6 h-6" />
+          </div>
+          <div>
+            <span className="text-xs text-slate-400 font-bold uppercase">{t("exp_expired_docs")}</span>
+            <strong className="text-2xl font-black text-rose-400 block">{expiredCount}</strong>
+          </div>
+        </div>
+
+        <div className="glass p-4 rounded-2xl border border-amber-500/30 flex items-center gap-3">
+          <div className="w-12 h-12 rounded-xl bg-amber-500/10 flex items-center justify-center text-amber-400">
+            <AlertTriangle className="w-6 h-6" />
+          </div>
+          <div>
+            <span className="text-xs text-slate-400 font-bold uppercase">{t("exp_urgent")}</span>
+            <strong className="text-2xl font-black text-amber-400 block">{urgentCount}</strong>
+          </div>
+        </div>
+
+        <div className="glass p-4 rounded-2xl border border-blue-500/30 flex items-center gap-3">
+          <div className="w-12 h-12 rounded-xl bg-blue-500/10 flex items-center justify-center text-blue-400">
+            <CalendarClock className="w-6 h-6" />
+          </div>
+          <div>
+            <span className="text-xs text-slate-400 font-bold uppercase">{t("exp_upcoming")}</span>
+            <strong className="text-2xl font-black text-blue-400 block">{upcomingCount}</strong>
+          </div>
+        </div>
+      </div>
+
+      {/* Filter and Search Controls */}
+      <div className="flex flex-col sm:flex-row gap-3 items-center justify-between">
+        <div className="relative w-full sm:w-80">
+          <label htmlFor="expiry-search-input" className="sr-only">{t("exp_search_label")}</label>
+          <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+          <input
+            id="expiry-search-input"
+            name="expirySearch"
+            type="text"
+            placeholder={t("exp_search_ph")}
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            autoComplete="off"
+            className="w-full pl-9 pr-4 py-2 bg-slate-900/90 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-400 focus:outline-none focus:border-blue-500"
+          />
+        </div>
+
+        <div className="flex items-center gap-2 w-full sm:w-auto overflow-x-auto pb-1 sm:pb-0">
+          {["All", "ActionRequired", "Expired", "Urgent (< 14d)", "Upcoming (< 30d)"].map((urg) => (
+            <button
+              key={urg}
+              type="button"
+              onClick={() => setFilterUrgency(urg)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all whitespace-nowrap ${
+                filterUrgency === urg
+                  ? "bg-blue-600 text-white shadow"
+                  : "bg-slate-800 text-slate-400 hover:text-white"
+              }`}
+            >
+              {filterLabels[urg] ?? urg}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Expiry Table */}
+      <div className="glass rounded-2xl overflow-hidden border border-slate-800">
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-xs">
+            <thead className="bg-slate-950/80 text-slate-400 uppercase tracking-wider font-semibold border-b border-slate-800">
+              <tr>
+                <th className="p-3.5">{t("exp_th_driver")}</th>
+                <th className="p-3.5">{t("exp_th_item")}</th>
+                <th className="p-3.5">{t("exp_th_expiry")}</th>
+                <th className="p-3.5">{t("exp_th_days")}</th>
+                <th className="p-3.5">{t("exp_th_status")}</th>
+                <th className="p-3.5 text-right">{t("exp_th_action")}</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-800">
+              {filteredItems.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="p-8 text-center text-slate-500 font-medium">
+                    {t("exp_empty")}
+                  </td>
+                </tr>
+              ) : (
+                filteredItems.map((item, idx) => {
+                  const itemKey = getItemKey(item);
+                  const isNotified = notifiedDrivers.has(itemKey);
+                  const isSending = sendingReminders.has(itemKey);
+                  return (
+                    <tr key={`${item.driverId}_${item.docType}_${idx}`} className="hover:bg-slate-800/30 transition-colors">
+                      <td className="p-3.5">
+                        <div className="font-bold text-white text-sm">{item.driverName}</div>
+                        <div className="text-slate-400 text-[11px]">{item.driverEmail}</div>
+                      </td>
+                      <td className="p-3.5">
+                        <div className="flex items-center gap-2 font-medium text-slate-200">
+                          <FileText className="w-3.5 h-3.5 text-blue-400" />
+                          <span>{item.docType}</span>
+                        </div>
+                      </td>
+                      <td className="p-3.5 font-mono text-slate-300">
+                        {item.expiryDateStr}
+                      </td>
+                      <td className="p-3.5">
+                        <span
+                          className={`font-mono font-bold ${
+                            item.daysRemaining < 0
+                              ? "text-rose-400"
+                              : item.daysRemaining <= 14
+                              ? "text-amber-400"
+                              : "text-slate-300"
+                          }`}
+                        >
+                          {item.daysRemaining < 0
+                            ? t(Math.abs(item.daysRemaining) === 1 ? "exp_days_ago_one" : "exp_days_ago_other", { count: Math.abs(item.daysRemaining) })
+                            : t(item.daysRemaining === 1 ? "exp_days_one" : "exp_days_other", { count: item.daysRemaining })}
+                        </span>
+                      </td>
+                      <td className="p-3.5">
+                        <span
+                          className={`px-2 py-0.5 rounded-full font-bold uppercase text-[10px] ${
+                            item.urgency === "Expired"
+                              ? "bg-rose-500/10 text-rose-400 border border-rose-500/30"
+                              : item.urgency === "Urgent (< 14d)"
+                              ? "bg-amber-500/10 text-amber-400 border border-amber-500/30"
+                              : item.urgency === "Upcoming (< 30d)"
+                              ? "bg-blue-500/10 text-blue-400 border border-blue-500/30"
+                              : "bg-emerald-500/10 text-emerald-400 border border-emerald-500/30"
+                          }`}
+                        >
+                          {urgencyLabels[item.urgency] ?? item.urgency}
+                        </span>
+                      </td>
+                      <td className="p-3.5 text-right">
+                        <button
+                          type="button"
+                          onClick={() => void handleSendReminder(item)}
+                          disabled={isNotified || isSending}
+                          className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all inline-flex items-center gap-1.5 ${
+                            isNotified || isSending
+                              ? "bg-slate-800 text-slate-500 cursor-not-allowed"
+                              : "bg-blue-600 hover:bg-blue-500 text-white"
+                          }`}
+                        >
+                          {isSending ? (
+                            <>
+                              <Send className="w-3.5 h-3.5 animate-pulse" />
+                              {t("exp_send_alert")}
+                            </>
+                          ) : isNotified ? (
+                            <>
+                              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                              {t("exp_alerted")}
+                            </>
+                          ) : (
+                            <>
+                              <Send className="w-3.5 h-3.5" />
+                              {t("exp_send_alert")}
+                            </>
+                          )}
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+};

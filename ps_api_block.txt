@@ -1,0 +1,77 @@
+  async getPreStartAwarenessQuestionsDriver(session: SessionState) {
+    if (!session) throw new Error("Unauthorized");
+    const response = await fetch(`${apiBaseUrl}/pre-start-awareness/questions`, {
+      headers: { Authorization: `Bearer ${session.accessToken}` }
+    });
+    if (!response.ok) {
+      let message = "Unable to load pre-start awareness questions.";
+      try {
+        const data = await response.json();
+        if (data?.message) message = data.message;
+      } catch {}
+      throw new Error(message);
+    }
+    const data = await response.json();
+    return (Array.isArray(data) ? data : []).map((item: any) => ({
+      id: item.id,
+      question: item.question,
+      options: Array.isArray(item.options) ? item.options.map(String) : [],
+      category: item.category ?? "Pre-Start Awareness"
+    }));
+  },
+
+  async submitPreStartAwareness(session: SessionState, answers: Record<string | number, number>) {
+    const response = await fetch(`${apiBaseUrl}/pre-start-awareness/submit`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${session.accessToken}`
+      },
+      body: JSON.stringify({ answers })
+    });
+    if (!response.ok) {
+      let message = "Speed awareness submission failed. Please try again.";
+      try {
+        const data = await response.json();
+        if (data?.message) message = data.message;
+      } catch {}
+      throw new Error(message);
+    }
+    return response.json();
+  },
+
+  async getPreStartAwarenessResultsDriver(session: SessionState): Promise<any[]> {
+    if (!session) throw new Error("Unauthorized");
+    const response = await fetch(`${apiBaseUrl}/pre-start-awareness/results`, {
+      headers: { Authorization: `Bearer ${session.accessToken}` }
+    });
+    if (!response.ok) throw new Error("Unable to load pre-start awareness results.");
+    const data = await response.json();
+    return Array.isArray(data) ? data : [];
+  },
+  async getPreStartAwarenessQuestions(session: SessionState): Promise<any[]> {
+    const result = await adminRequest<{ questions: any[] }>(`/admin/pre-start-awareness/questions`, session, { method: "GET" });
+    return result.questions ?? [];
+  },
+  async savePreStartAwarenessQuestion(session: SessionState, question: any): Promise<any> {
+    const path = question.id ? `/admin/pre-start-awareness/questions/${encodeURIComponent(question.id)}` : `/admin/pre-start-awareness/questions`;
+    const result = await adminRequest<{ question: any }>(path, session, {
+      method: question.id ? "PUT" : "POST",
+      body: JSON.stringify(question)
+    });
+    return result.question;
+  },
+  async deletePreStartAwarenessQuestion(session: SessionState, id: string): Promise<void> {
+    await adminRequest(`/admin/pre-start-awareness/questions/${encodeURIComponent(id)}`, session, { method: "DELETE" });
+  },
+  async getPreStartAwarenessResults(session: SessionState): Promise<any[]> {
+    const result = await adminRequest<{ results: any[] }>(`/admin/pre-start-awareness/results`, session, { method: "GET" });
+    return result.results ?? [];
+  },
+  async savePreStartAwarenessFeedback(session: SessionState, resultId: string, feedback: string): Promise<any> {
+    const result = await adminRequest<{ result: any }>(`/admin/pre-start-awareness/results/${encodeURIComponent(resultId)}/feedback`, session, {
+      method: "PATCH",
+      body: JSON.stringify({ feedback })
+    });
+    return result.result;
+  },

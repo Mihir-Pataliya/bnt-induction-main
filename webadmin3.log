@@ -1,0 +1,12 @@
+
+> @induction/web@0.0.1 build
+> tsc --noEmit && vite build
+
+src/components/admin/FatigueAwarenessAdmin.tsx(354,11): error TS1005: ')' expected.
+npm error Lifecycle script `build` failed with error:
+npm error code 2
+npm error path C:\Users\Dell\Downloads\bnt-induction-main\bnt-induction-main\apps\web
+npm error workspace @induction/web@0.0.1
+npm error location C:\Users\Dell\Downloads\bnt-induction-main\bnt-induction-main\apps\web
+npm error command failed
+npm error command C:\WINDOWS\system32\cmd.exe /d /s /c tsc --noEmit && vite build

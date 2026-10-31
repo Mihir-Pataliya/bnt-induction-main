@@ -1,0 +1,19 @@
+
+> @induction/web@0.0.1 build
+> tsc --noEmit && vite build
+
+src/components/admin/AdminDashboard.tsx(712,55): error TS2786: 'QuarterlyComplianceReviews' cannot be used as a JSX component.
+  Its type '({ session }: { session: SessionState; }) => void' is not a valid JSX element type.
+    Type '({ session }: { session: SessionState; }) => void' is not assignable to type '(props: any, deprecatedLegacyContext?: any) => ReactNode'.
+      Type 'void' is not assignable to type 'ReactNode'.
+src/components/AdminCMS.tsx(867,10): error TS2786: 'QuarterlyComplianceReviews' cannot be used as a JSX component.
+  Its type '({ session }: { session: SessionState; }) => void' is not a valid JSX element type.
+    Type '({ session }: { session: SessionState; }) => void' is not assignable to type '(props: any, deprecatedLegacyContext?: any) => ReactNode'.
+      Type 'void' is not assignable to type 'ReactNode'.
+npm error Lifecycle script `build` failed with error:
+npm error code 2
+npm error path C:\Users\Dell\Downloads\bnt-induction-main\bnt-induction-main\apps\web
+npm error workspace @induction/web@0.0.1
+npm error location C:\Users\Dell\Downloads\bnt-induction-main\bnt-induction-main\apps\web
+npm error command failed
+npm error command C:\WINDOWS\system32\cmd.exe /d /s /c tsc --noEmit && vite build

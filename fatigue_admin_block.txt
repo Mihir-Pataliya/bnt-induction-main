@@ -1,0 +1,3464 @@
+app.get("/api/admin/fatigue-awareness/questions", requireAdmin, async (request: AdminRequest, response, next) => {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from("fatigue_awareness_questions")
+      .select("*")
+      .eq("assessment_id", "fatigue_awareness")
+      .order("sort_order", { ascending: true })
+      .order("created_at", { ascending: true });
+    if (error) throw error;
+    response.json({ questions: data ?? [] });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/admin/fatigue-awareness/questions", requireAdmin, async (request: AdminRequest, response, next) => {
+  try {
+    const schema = z.object({
+      id: z.string().uuid().optional(),
+      question: z.string().trim().min(1),
+      options: z.array(z.string().trim().min(1)).min(2).max(6),
+      correct_answer: z.number().int().min(0),
+      explanation: z.string().optional().default(""),
+      category: z.string().optional().default("Fatigue Awareness"),
+      sort_order: z.coerce.number().optional()
+    });
+    const input = schema.parse(request.body);
+    if (input.correct_answer >= input.options.length) {
+      return response.status(400).json({ message: "Select a correct answer from the available options." });
+    }
+    const { count, error: countError } = await supabaseAdmin
+      .from("fatigue_awareness_questions")
+      .select("id", { count: "exact", head: true })
+      .eq("assessment_id", "fatigue_awareness");
+    if (countError) throw countError;
+    if ((count ?? 0) >= 10) {
+      return response.status(400).json({ message: "A maximum of 10 fatigue awareness questions is allowed." });
+    }
+    const id = input.id ?? crypto.randomUUID();
+    const now = new Date().toISOString();
+    const row = {
+      id,
+      assessment_id: "fatigue_awareness",
+      question: input.question,
+      options: input.options,
+      correct_answer: input.correct_answer,
+      explanation: input.explanation ?? "",
+      category: input.category ?? "Fatigue Awareness",
+      sort_order: input.sort_order ?? 0,
+      updated_at: now
+    };
+    const { error } = await supabaseAdmin.from("fatigue_awareness_questions").insert(row);
+    if (error) throw error;
+    if (request.authUserId) await logAuditEntry(request.authUserId, "fatigue_awareness_question_created", { questionId: id });
+    response.status(201).json({ question: { ...row, created_at: now } });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.put("/api/admin/fatigue-awareness/questions/:id", requireAdmin, async (request: AdminRequest, response, next) => {
+  try {
+    const questionId = String(request.params.id);
+    const schema = z.object({
+      question: z.string().trim().min(1),
+      options: z.array(z.string().trim().min(1)).min(2).max(6),
+      correct_answer: z.number().int().min(0),
+      explanation: z.string().optional().default(""),
+      category: z.string().optional().default("Fatigue Awareness"),
+      sort_order: z.coerce.number().optional()
+    });
+    const input = schema.parse(request.body);
+    if (input.correct_answer >= input.options.length) {
+      return response.status(400).json({ message: "Select a correct answer from the available options." });
+    }
+    const { error } = await supabaseAdmin
+      .from("fatigue_awareness_questions")
+      .update({
+        question: input.question,
+        options: input.options,
+        correct_answer: input.correct_answer,
+        explanation: input.explanation ?? "",
+        category: input.category ?? "Fatigue Awareness",
+        sort_order: input.sort_order ?? 0,
+        updated_at: new Date().toISOString()
+      })
+      .eq("id", questionId)
+      .eq("assessment_id", "fatigue_awareness");
+    if (error) throw error;
+    if (request.authUserId) await logAuditEntry(request.authUserId, "fatigue_awareness_question_updated", { questionId });
+    response.json({ question: { id: questionId, assessment_id: "fatigue_awareness", ...input } });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete("/api/admin/fatigue-awareness/questions/:id", requireAdmin, async (request: AdminRequest, response, next) => {
+  try {
+    const questionId = String(request.params.id);
+    const { error } = await supabaseAdmin
+      .from("fatigue_awareness_questions")
+      .delete()
+      .eq("id", questionId)
+      .eq("assessment_id", "fatigue_awareness");
+    if (error) throw error;
+    if (request.authUserId) await logAuditEntry(request.authUserId, "fatigue_awareness_question_deleted", { questionId });
+    response.json({ message: "Question deleted." });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/admin/fatigue-awareness/results", requireAdmin, async (request: AdminRequest, response, next) => {
+  try {
+    const { data: rows, error } = await supabaseAdmin
+      .from("fatigue_awareness_results")
+      .select("id, user_id, score, total_questions, passed, completed_at, answers")
+      .eq("assessment_id", "fatigue_awareness")
+      .order("completed_at", { ascending: false })
+      .order("id", { ascending: false })
+      .limit(10000);
+    if (error) throw error;
+    const { data: currentQuestions, error: questionsError } = await supabaseAdmin
+      .from("fatigue_awareness_questions")
+      .select("id, question, options, correct_answer")
+      .eq("assessment_id", "fatigue_awareness")
+      .order("sort_order", { ascending: true })
+      .order("created_at", { ascending: true });
+    if (questionsError) throw questionsError;
+    const userIds = Array.from(new Set((rows ?? []).map((r: any) => String(r.user_id))));
+    const { data: profiles, error: profilesError } = userIds.length
+      ? await supabaseAdmin.from("profiles").select("id, full_name, email").in("id", userIds)
+      : { data: [], error: null };
+    if (profilesError) throw profilesError;
+    const nameMap = new Map((profiles ?? []).map((p: any) => [String(p.id), p.full_name || p.email || "Driver"]));
+    const attempts = addFatigueAttemptNumbers(rows ?? []);
+    const results = attempts.map((r: any) => ({
+      id: r.id,
+      user_id: r.user_id,
+      driver_name: nameMap.get(String(r.user_id)) ?? "Driver",
+      attempt_number: r.attempt_number,
+      score: r.score,
+      total_questions: r.total_questions,
+      completed_at: r.completed_at,
+      passed: r.passed,
+      answers: Array.isArray(r.answers)
+        ? r.answers
+        : buildFatigueAnswerReview(currentQuestions ?? [], r.answers ?? {})
+    }));
+    response.json({ results });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.patch("/api/admin/cms/sections/:id", requireAdmin, async (request: AdminRequest, response, next) => {
+  try {
+    const sectionId = String(request.params.id);
+    const schema = z.object({
+      title: z.string().optional(),
+      summary: z.string(),
+      format: z.string(),
+      video_url: z.string().nullable().optional(),
+      video_duration_seconds: z.coerce.number().optional(),
+      require_full_watch: z.boolean().optional(),
+      media_json: z.record(z.unknown()).optional(),
+      audience: z.enum(["all", "employee", "contractor"]).optional(),
+      target_role: z.enum(["all", "driver", "warehouse", "office"]).optional(),
+      is_mandatory: z.boolean().optional(),
+      version: z.string().optional()
+    });
+    const parsed = schema.parse(request.body);
+
+    const { error } = await supabaseAdmin.from("learning_sections").update(parsed).eq("id", sectionId);
+    if (error) throw error;
+
+    if (request.authUserId) {
+      await logAuditEntry(request.authUserId, "admin_updated_section", { sectionId });
+    }
+    response.json({ message: "Section updated." });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/admin/cms/sections", requireAdmin, async (request: AdminRequest, response, next) => {
+  try {
+    const schema = z.object({
+      id: z.string().uuid().optional(),
+      title: z.string().trim().min(1),
+      summary: z.string().default(""),
+      format: z.string().default("Video + Text"),
+      sort_order: z.coerce.number().optional(),
+      video_url: z.string().nullable().optional(),
+      media_json: z.record(z.unknown()).optional(),
+      video_duration_seconds: z.coerce.number().optional(),
+      require_full_watch: z.boolean().optional(),
+      audience: z.enum(["all", "employee", "contractor"]).optional(),
+      target_role: z.enum(["all", "driver", "warehouse", "office"]).optional(),
+      is_mandatory: z.boolean().optional(),
+      version: z.string().optional()
+    });
+    const input = schema.parse(request.body);
+    const id = input.id ?? crypto.randomUUID();
+    const payload = {
+      id,
+      title: input.title,
+      summary: input.summary,
+      format: input.format,
+      sort_order: input.sort_order ?? 1,
+      video_url: input.video_url ?? null,
+      media_json: input.media_json ?? {},
+      video_duration_seconds: input.video_duration_seconds ?? 0,
+      require_full_watch: input.require_full_watch ?? false,
+      audience: input.audience ?? "all",
+      target_role: input.target_role ?? "driver",
+      is_mandatory: input.is_mandatory ?? true,
+      version: input.version ?? "1.0",
+      created_at: new Date().toISOString()
+    };
+    const { error } = await writeWithFallback("learning_sections", "insert", payload, undefined, { selectResult: false });
+    if (error) throw error;
+    if (request.authUserId) await logAuditEntry(request.authUserId, "admin_created_section", { sectionId: id });
+    response.status(201).json({ id, message: "Module created." });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ============================================================
+// Module Extras + Templates + Publish to Drivers
+// ============================================================
+
+const MIGRATION_015_MESSAGE =
+  "Migration 015 has not been applied to this database. Run supabase/migrations/015_module_extras_and_templates.sql (or the SQL in the README) first.";
+
+// Columns that only exist once migration 015 has run.
+const MIGRATION_015_ONLY_KEYS = [
+  "is_template",
+  "site_tag",
+  "media_json",
+  "source_slide_id",
+  "correct_answers",
+  "accepted_answers"
+];
+
+// PostgREST reports a missing column as 42703 (Postgres undefined_column) or
+// PGRST204 ("could not find the X column in the schema cache").
+function isMissingColumnError(error: any): boolean {
+  if (!error) return false;
+  const code = String(error.code ?? "");
+  if (code === "42703" || code === "PGRST204") return true;
+  const message = String(error.message ?? "").toLowerCase();
+  return message.includes("does not exist") || message.includes("schema cache");
+}
+
+// Strips the migration-015-only columns so a request still succeeds against a
+// database that has not had that migration applied.
+function withoutNewColumns(payload: Record<string, any>): Record<string, any> {
+  const cleaned = { ...payload };
+  for (const key of MIGRATION_015_ONLY_KEYS) delete cleaned[key];
+  return cleaned;
+}
+
+// Tries a write with the full payload, and retries without the new columns when
+// the database reports one of them missing. Returns the row plus a flag.
+async function writeWithFallback(
+  table: string,
+  mode: "insert" | "update",
+  payload: Record<string, any>,
+  match?: Record<string, any>,
+  options?: { selectResult?: boolean }
+): Promise<{ data: any; error: any; degraded: boolean }> {
+  const wantRow = options?.selectResult !== false;
+
+  const run = (body: Record<string, any>) => {
+    let query = mode === "insert"
+      ? supabaseAdmin.from(table).insert(body)
+      : supabaseAdmin.from(table).update(body);
+
+    for (const [key, value] of Object.entries(match ?? {})) {
+      query = (query as any).eq(key, value);
+    }
+
+    // For updates, the row must exist - use .single() to catch missing rows
+    // For inserts, .maybeSingle() is fine (returns the new row)
+    return wantRow
+      ? query.select()[mode === "update" ? "single" : "maybeSingle"]()
+      : query;
+  };
+
+  const first = await run(payload);
+  if (!first.error) return { data: first.data ?? null, error: null, degraded: false };
+  // If update affects 0 rows (PGRST116), treat as "not found" rather than retry
+  if (mode === "update" && first.error?.code === "PGRST116") {
+    return { data: null, error: { ...first.error, message: "Row not found" }, degraded: false };
+  }
+  if (!isMissingColumnError(first.error)) return { data: null, error: first.error, degraded: false };
+
+  // One of the new columns is absent — retry without any of them.
+  const retryPayload = withoutNewColumns(payload);
+  if (Object.keys(retryPayload).length === 0) {
+    return { data: null, error: first.error, degraded: true };
+  }
+
+  const second = await run(retryPayload);
+  return { data: second.data ?? null, error: second.error, degraded: true };
+}
+
+// ============================================================================
+// Course / Slide / Question routes
+//
+// These back the Site Inductions course builder and were never registered, so
+// every call fell through to a "Cannot PATCH/GET …" 404 before dropping back to
+// a direct Supabase query. Registering them makes the API path authoritative
+// (service-role, so RLS can never block an admin) and stops the log noise.
+//
+// All of them are additive — no existing route is replaced.
+// ============================================================================
+
+// ---------------------------- Courses ----------------------------
+
+app.get("/api/admin/cms/courses", requireAdmin, async (request: AdminRequest, response, next) => {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from("induction_courses")
+      .select("*")
+      .order("created_at", { ascending: false });
+    if (error) throw error;
+    response.json(data ?? []);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/admin/cms/courses", requireAdmin, async (request: AdminRequest, response, next) => {
+  try {
+    const body = request.body ?? {};
+    const now = new Date().toISOString();
+
+    if (!String(body.title ?? "").trim()) {
+      response.status(400).json({ message: "A course title is required." });
+      return;
+    }
+
+    const payload = {
+      id: crypto.randomUUID(),
+      title: String(body.title),
+      description: String(body.description ?? ""),
+      template_id: body.templateId ?? null,
+      version_label: String(body.versionLabel ?? "1.0"),
+      revision_notes: String(body.revisionNotes ?? "Initial draft"),
+      is_template: Boolean(body.isTemplate),
+      site_tag: String(body.siteTag ?? "global"),
+      created_by: request.authUserId ?? null,
+      created_at: now,
+      updated_at: now
+    };
+
+    const { data, error } = await writeWithFallback("induction_courses", "insert", payload);
+    if (error) throw error;
+    response.status(201).json(data);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.patch("/api/admin/cms/courses/:id", requireAdmin, async (request: AdminRequest, response, next) => {
+  try {
+    const courseId = String(request.params.id);
+    const body = request.body ?? {};
+
+    const payload = {
+      ...(body.title !== undefined ? { title: String(body.title) } : {}),
+      ...(body.description !== undefined ? { description: String(body.description) } : {}),
+      ...(body.versionLabel !== undefined ? { version_label: String(body.versionLabel) } : {}),
+      ...(body.revisionNotes !== undefined ? { revision_notes: String(body.revisionNotes) } : {}),
+      ...(body.isCurrent !== undefined ? { is_current: Boolean(body.isCurrent) } : {}),
+      ...(body.isTemplate !== undefined ? { is_template: Boolean(body.isTemplate) } : {}),
+      ...(body.siteTag !== undefined ? { site_tag: String(body.siteTag) } : {}),
+      updated_at: new Date().toISOString()
+    };
+
+    const { data, error } = await writeWithFallback(
+      "induction_courses",
+      "update",
+      payload,
+      { id: courseId }
+    );
+    if (error) throw error;
+    response.json(data);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete("/api/admin/cms/courses/:id", requireAdmin, async (request: AdminRequest, response, next) => {
+  try {
+    const courseId = String(request.params.id);
+
+    // quiz_questions has no cascade in the schema, so remove a slide's
+    // questions before the slide itself.
+    const { data: slides } = await supabaseAdmin
+      .from("induction_slides")
+      .select("id")
+      .eq("course_id", courseId);
+
+    for (const slide of slides ?? []) {
+      const { error: qError } = await supabaseAdmin.from("quiz_questions").delete().eq("slide_id", slide.id);
+      if (qError) throw qError;
+    }
+
+    const { error: slideError } = await supabaseAdmin.from("induction_slides").delete().eq("course_id", courseId);
+    if (slideError) throw slideError;
+
+    const { error } = await supabaseAdmin.from("induction_courses").delete().eq("id", courseId);
+    if (error) throw error;
+
+    response.json({ message: "Course deleted." });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ----------------------------- Slides -----------------------------
+
+app.get("/api/admin/cms/courses/:id/slides", requireAdmin, async (request: AdminRequest, response, next) => {
+  try {
+    const courseId = String(request.params.id);
+    const { data, error } = await supabaseAdmin
+      .from("induction_slides")
+      .select("*")
+      .eq("course_id", courseId)
+      .order("slide_order", { ascending: true });
+    if (error) throw error;
+    response.json(data ?? []);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/admin/cms/courses/:id/slides", requireAdmin, async (request: AdminRequest, response, next) => {
+  try {
+    const courseId = String(request.params.id);
+    const body = request.body ?? {};
+    const now = new Date().toISOString();
+
+    if (body.slideOrder === undefined) {
+      const { data: last } = await supabaseAdmin
+        .from("induction_slides")
+        .select("slide_order")
+        .eq("course_id", courseId)
+        .order("slide_order", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      body.slideOrder = Number(last?.slide_order ?? 0) + 1;
+    }
+
+    const payload = {
+      id: crypto.randomUUID(),
+      course_id: courseId,
+      slide_order: Number(body.slideOrder) || 1,
+      slide_type: String(body.slideType ?? "text"),
+      title: String(body.title ?? "New Slide"),
+      content_json: body.contentJson ?? {},
+      site_tag: String(body.siteTag ?? "global"),
+      video_url: body.videoUrl ?? null,
+      audio_url: body.audioUrl ?? null,
+      forced_wait_seconds: Number(body.forcedWaitSeconds ?? 0),
+      estimated_duration_seconds: Number(body.estimatedDurationSeconds ?? 0),
+      trigger_config: body.triggerConfig ?? {},
+      created_at: now,
+      updated_at: now
+    };
+
+    const { data, error } = await writeWithFallback("induction_slides", "insert", payload);
+    if (error) {
+      if (String(error.code) === "23502" && String(error.message).includes("section_id")) {
+        response.status(409).json({
+          message: "The database still requires induction_slides.section_id. Apply migration 017_allow_course_induction_slides.sql, then retry."
+        });
+        return;
+      }
+      throw error;
+    }
+    response.status(201).json(data);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.patch("/api/admin/cms/courses/:id/slides/:slideId", requireAdmin, async (request: AdminRequest, response, next) => {
+  try {
+    const slideId = String(request.params.slideId);
+    const body = request.body ?? {};
+
+    const payload = {
+      ...(body.title !== undefined ? { title: String(body.title) } : {}),
+      ...(body.slideType !== undefined ? { slide_type: String(body.slideType) } : {}),
+      ...(body.contentJson !== undefined ? { content_json: body.contentJson } : {}),
+      ...(body.slideOrder !== undefined ? { slide_order: Number(body.slideOrder) } : {}),
+      ...(body.videoUrl !== undefined ? { video_url: body.videoUrl ?? null } : {}),
+      ...(body.audioUrl !== undefined ? { audio_url: body.audioUrl ?? null } : {}),
+      ...(body.forcedWaitSeconds !== undefined ? { forced_wait_seconds: Number(body.forcedWaitSeconds) } : {}),
+      ...(body.estimatedDurationSeconds !== undefined ? { estimated_duration_seconds: Number(body.estimatedDurationSeconds) } : {}),
+      ...(body.triggerConfig !== undefined ? { trigger_config: body.triggerConfig } : {}),
+      ...(body.siteTag !== undefined ? { site_tag: String(body.siteTag) } : {}),
+      updated_at: new Date().toISOString()
+    };
+
+    const { data, error } = await writeWithFallback(
+      "induction_slides",
+      "update",
+      payload,
+      { id: slideId }
+    );
+    if (error) throw error;
+    response.json(data);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete("/api/admin/cms/courses/:id/slides/:slideId", requireAdmin, async (request: AdminRequest, response, next) => {
+  try {
+    const slideId = String(request.params.slideId);
+
+    const { error: qError } = await supabaseAdmin.from("quiz_questions").delete().eq("slide_id", slideId);
+    if (qError) throw qError;
+
+    const { error } = await supabaseAdmin.from("induction_slides").delete().eq("id", slideId);
+    if (error) throw error;
+
+    response.json({ message: "Slide deleted." });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/admin/cms/courses/:id/slides/reorder", requireAdmin, async (request: AdminRequest, response, next) => {
+  try {
+    const courseId = String(request.params.id);
+    const orders: Array<{ slideId: string; slideOrder: number }> = Array.isArray(request.body?.orders)
+      ? request.body.orders
+      : [];
+
+    if (orders.length === 0) {
+      response.status(400).json({ message: "No reorder instructions supplied." });
+      return;
+    }
+
+    const now = new Date().toISOString();
+    for (const item of orders) {
+      const { error } = await supabaseAdmin
+        .from("induction_slides")
+        .update({ slide_order: Number(item.slideOrder), updated_at: now })
+        .eq("id", String(item.slideId))
+        .eq("course_id", courseId);
+      if (error) throw error;
+    }
+
+    response.json({ message: "Slide order updated." });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ------------------------ Slide questions ------------------------
+
+app.get("/api/admin/cms/slides/:slideId/questions", requireAdmin, async (request: AdminRequest, response, next) => {
+  try {
+    const slideId = String(request.params.slideId);
+    const { data, error } = await supabaseAdmin
+      .from("quiz_questions")
+      .select("*")
+      .eq("slide_id", slideId)
+      .order("sort_order", { ascending: true });
+    if (error) throw error;
+    response.json(data ?? []);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/admin/cms/slides/:slideId/questions", requireAdmin, async (request: AdminRequest, response, next) => {
+  try {
+    const slideId = String(request.params.slideId);
+    const body = request.body ?? {};
+    const now = new Date().toISOString();
+
+    if (!String(body.question ?? "").trim()) {
+      response.status(400).json({ message: "Question text is required." });
+      return;
+    }
+
+    const payload = {
+      id: crypto.randomUUID(),
+      slide_id: slideId,
+      question: String(body.question),
+      options: Array.isArray(body.options) ? body.options.map(String) : [],
+      correct_answer: Number(body.correctAnswer ?? 0),
+      correct_answers: Array.isArray(body.correctAnswers)
+        ? body.correctAnswers.map(Number)
+        : [Number(body.correctAnswer ?? 0)],
+      accepted_answers: Array.isArray(body.acceptedAnswers) ? body.acceptedAnswers.map(String) : [],
+      explanation: String(body.explanation ?? ""),
+      category: String(body.category ?? "Site Rules"),
+      is_critical: Boolean(body.isCritical),
+      question_type: String(body.questionType ?? "single_choice"),
+      placement: String(body.placement ?? "below_slide"),
+      sort_order: Number(body.sortOrder ?? 1),
+      created_at: now
+    };
+
+    const { data, error } = await writeWithFallback("quiz_questions", "insert", payload);
+    if (error) throw error;
+    response.status(201).json(data);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.patch("/api/admin/cms/slides/:slideId/questions/:questionId", requireAdmin, async (request: AdminRequest, response, next) => {
+  try {
+    const questionId = String(request.params.questionId);
+    const body = request.body ?? {};
+
+    const payload = {
+      ...(body.question !== undefined ? { question: String(body.question) } : {}),
+      ...(body.options !== undefined ? { options: Array.isArray(body.options) ? body.options.map(String) : [] } : {}),
+      ...(body.correctAnswer !== undefined ? { correct_answer: Number(body.correctAnswer) } : {}),
+      ...(body.correctAnswers !== undefined ? { correct_answers: body.correctAnswers.map(Number) } : {}),
+      ...(body.acceptedAnswers !== undefined ? { accepted_answers: body.acceptedAnswers.map(String) } : {}),
+      ...(body.explanation !== undefined ? { explanation: String(body.explanation) } : {}),
+      ...(body.category !== undefined ? { category: String(body.category) } : {}),
+      ...(body.isCritical !== undefined ? { is_critical: Boolean(body.isCritical) } : {}),
+      ...(body.questionType !== undefined ? { question_type: String(body.questionType) } : {}),
+      ...(body.placement !== undefined ? { placement: String(body.placement) } : {}),
+      ...(body.sortOrder !== undefined ? { sort_order: Number(body.sortOrder) } : {})
+    };
+
+    const { data, error } = await writeWithFallback(
+      "quiz_questions",
+      "update",
+      payload,
+      { id: questionId }
+    );
+    if (error) throw error;
+    response.json(data);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete("/api/admin/cms/slides/:slideId/questions/:questionId", requireAdmin, async (request: AdminRequest, response, next) => {
+  try {
+    const questionId = String(request.params.questionId);
+    const { error } = await supabaseAdmin.from("quiz_questions").delete().eq("id", questionId);
+    if (error) throw error;
+    response.json({ message: "Question deleted." });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /api/admin/cms/templates - list courses flagged as reusable templates
+app.get("/api/admin/cms/templates", requireAdmin, async (request: AdminRequest, response, next) => {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from("induction_courses")
+      .select("id, title, description, site_tag, version_label, updated_at")
+      .eq("is_template", true)
+      .order("updated_at", { ascending: false });
+
+    // The filter column only exists after migration 015. Until then there are no
+    // templates to report, so answer with an empty list rather than failing.
+    if (error) {
+      if (isMissingColumnError(error)) {
+        response.json([]);
+        return;
+      }
+      throw error;
+    }
+    response.json(data ?? []);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// POST /api/admin/cms/courses/:id/mark-template - flag / unflag a course as a master blueprint
+app.post("/api/admin/cms/courses/:id/mark-template", requireAdmin, async (request: AdminRequest, response, next) => {
+  try {
+    const courseId = String(request.params.id);
+    const schema = z.object({ isTemplate: z.boolean().optional().default(true) });
+    const { isTemplate } = schema.parse(request.body ?? {});
+
+    const { error } = await supabaseAdmin
+      .from("induction_courses")
+      .update({ is_template: isTemplate, updated_at: new Date().toISOString() })
+      .eq("id", courseId);
+    if (error) {
+      if (isMissingColumnError(error)) {
+        response.status(400).json({ message: MIGRATION_015_MESSAGE });
+        return;
+      }
+      throw error;
+    }
+
+    if (request.authUserId) {
+      await logAuditEntry(request.authUserId, "admin_course_marked_template", { courseId, isTemplate });
+    }
+    response.json({ message: isTemplate ? "Course marked as template." : "Template flag removed." });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// POST /api/admin/cms/courses/:id/clone - deep-copy a template into a new site variant
+// Copies every slide in order, plus each slide's media and questions.
+// Videos, images, PDFs and voiceovers are reused by URL — nothing is re-uploaded.
+app.post("/api/admin/cms/courses/:id/clone", requireAdmin, async (request: AdminRequest, response, next) => {
+  try {
+    const sourceCourseId = String(request.params.id);
+    const schema = z.object({
+      title: z.string().min(1),
+      siteTag: z.string().min(1).default("global")
+    });
+    const parsed = schema.parse(request.body);
+    const now = new Date().toISOString();
+
+    const { data: sourceCourse, error: courseError } = await supabaseAdmin
+      .from("induction_courses")
+      .select("*")
+      .eq("id", sourceCourseId)
+      .single();
+    if (courseError) throw courseError;
+
+    const newCourseId = crypto.randomUUID();
+    const { data: newCourse, error: insertError } = await supabaseAdmin
+      .from("induction_courses")
+      .insert({
+        id: newCourseId,
+        title: parsed.title,
+        description: sourceCourse.description || "",
+        template_id: sourceCourseId,
+        site_tag: parsed.siteTag,
+        version_label: "1.0",
+        revision_notes: `Cloned from ${sourceCourse.title}`,
+        is_template: false,
+        is_current: false,
+        created_by: request.authUserId ?? null,
+        created_at: now,
+        updated_at: now
+      })
+      .select()
+      .single();
+    if (insertError) throw insertError;
+
+    const { data: sourceSlides, error: slidesError } = await supabaseAdmin
+      .from("induction_slides")
+      .select("*")
+      .eq("course_id", sourceCourseId)
+      .order("slide_order", { ascending: true });
+    if (slidesError) throw slidesError;
+
+    let slidesCopied = 0;
+    let questionsCopied = 0;
+
+    for (const slide of sourceSlides ?? []) {
+      const newSlideId = crypto.randomUUID();
+      const { error: slideInsertError } = await supabaseAdmin
+        .from("induction_slides")
+        .insert({
+          id: newSlideId,
+          course_id: newCourseId,
+          slide_order: slide.slide_order,
+          slide_type: slide.slide_type,
+          title: slide.title,
+          content_json: slide.content_json ?? {},
+          site_tag: parsed.siteTag,
+          video_url: slide.video_url ?? null,
+          audio_url: slide.audio_url ?? null,
+          forced_wait_seconds: slide.forced_wait_seconds ?? 0,
+          estimated_duration_seconds: slide.estimated_duration_seconds ?? 0,
+          trigger_config: slide.trigger_config ?? {},
+          created_at: now,
+          updated_at: now
+        });
+      if (slideInsertError) throw slideInsertError;
+      slidesCopied += 1;
+
+      const { data: sourceQuestions, error: qError } = await supabaseAdmin
+        .from("quiz_questions")
+        .select("*")
+        .eq("slide_id", slide.id);
+      if (qError) throw qError;
+
+      for (const q of sourceQuestions ?? []) {
+        const { error: qInsertError } = await supabaseAdmin.from("quiz_questions").insert({
+          question: q.question,
+          options: q.options ?? [],
+          correct_answer: q.correct_answer ?? 0,
+          explanation: q.explanation || "",
+          category: q.category || "Site Rules",
+          is_critical: q.is_critical ?? false,
+          question_type: q.question_type || "single_choice",
+          placement: q.placement || "below_slide",
+          slide_id: newSlideId,
+          sort_order: q.sort_order ?? 1,
+          created_at: now
+        });
+        if (qInsertError) throw qInsertError;
+        questionsCopied += 1;
+      }
+    }
+
+    if (request.authUserId) {
+      await logAuditEntry(request.authUserId, "admin_course_cloned", {
+        sourceCourseId,
+        newCourseId,
+        siteTag: parsed.siteTag,
+        slidesCopied,
+        questionsCopied
+      });
+    }
+
+    response.status(201).json({ course: newCourse, slidesCopied, questionsCopied });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// POST /api/admin/cms/courses/:id/publish - push a course's slides into the
+// table drivers already read (learning_sections). Existing drivers keep working:
+// - slides are matched by source_slide_id, so re-publishing updates in place
+// - only this course's site_tag is written, so other sites are untouched
+// - nothing is deleted
+app.post("/api/admin/cms/courses/:id/publish", requireAdmin, async (request: AdminRequest, response, next) => {
+  let publishOperation = "checking publish schema";
+  try {
+    const courseId = String(request.params.id);
+    const now = new Date().toISOString();
+    const body = request.body ?? {};
+
+    const [
+      { error: learningSchemaError },
+      { error: courseSchemaError },
+      { error: questionSchemaError }
+    ] = await Promise.all([
+      supabaseAdmin.from("learning_sections").select("media_json, site_tag, source_slide_id").limit(0),
+      supabaseAdmin.from("induction_courses").select("site_tag, is_template").limit(0),
+      supabaseAdmin.from("quiz_questions").select("correct_answers, accepted_answers").limit(0)
+    ]);
+    if (learningSchemaError || courseSchemaError || questionSchemaError) {
+      const schemaError = learningSchemaError ?? courseSchemaError ?? questionSchemaError;
+      if (isMissingColumnError(schemaError)) {
+        response.status(503).json({
+          message: "Course publishing needs Supabase migration 015. Apply supabase/migrations/015_module_extras_and_templates.sql, then retry."
+        });
+        return;
+      }
+      if (String(schemaError?.code ?? "") === "42P01") {
+        response.status(503).json({
+          message: "Course publishing needs Supabase migrations 012 and 015. Apply supabase/migrations/012_slide_course_builder.sql and 015_module_extras_and_templates.sql, then retry."
+        });
+        return;
+      }
+      throw schemaError;
+    }
+
+    publishOperation = "loading course";
+    const { data: course, error: courseError } = await supabaseAdmin
+      .from("induction_courses")
+      .select("*")
+      .eq("id", courseId)
+      .single();
+    if (courseError) throw courseError;
+
+    // The version fields in the publish dialog used to be ignored by the client,
+    // leaving every published slide tagged with the original course version.
+    if (body.versionLabel !== undefined || body.revisionNotes !== undefined) {
+      publishOperation = "saving course version";
+      const versionUpdate = {
+        ...(body.versionLabel !== undefined ? { version_label: String(body.versionLabel).trim() || course.version_label || "1.0" } : {}),
+        ...(body.revisionNotes !== undefined ? { revision_notes: String(body.revisionNotes) } : {}),
+        updated_at: now
+      };
+      const { error } = await supabaseAdmin.from("induction_courses").update(versionUpdate).eq("id", courseId);
+      if (error) throw error;
+      Object.assign(course, versionUpdate);
+    }
+
+    const siteTag = String(course.site_tag || "global");
+
+    publishOperation = "loading course slides";
+    const { data: slides, error: slidesError } = await supabaseAdmin
+      .from("induction_slides")
+      .select("*")
+      .eq("course_id", courseId)
+      .order("slide_order", { ascending: true });
+    if (slidesError) throw slidesError;
+
+    if (!slides || slides.length === 0) {
+      return response.status(400).json({ message: "This course has no slides to publish." });
+    }
+
+    // Highest existing global order, so published slides append after the
+    // shared modules instead of shuffling them.
+    publishOperation = "reading module order";
+    const { data: maxOrderRow, error: maxOrderError } = await supabaseAdmin
+      .from("learning_sections")
+      .select("sort_order")
+      .order("sort_order", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (maxOrderError) throw maxOrderError;
+    let nextOrder = Number(maxOrderRow?.sort_order ?? 0) + 1;
+
+    let published = 0;
+    let updated = 0;
+
+    for (const slide of slides) {
+      // Slide questions live in quiz_questions, linked by slide_id.
+      publishOperation = "loading slide questions";
+      const { data: slideQuestions, error: slideQuestionsError } = await supabaseAdmin
+        .from("quiz_questions")
+        .select("*")
+        .eq("slide_id", slide.id)
+        .order("sort_order", { ascending: true });
+      if (slideQuestionsError) throw slideQuestionsError;
+
+      const media = buildMediaJson(slide, slideQuestions ?? []);
+      const summary = JSON.stringify({
+        intro: slide.content_json?.body ?? "",
+        bullets: [] as string[],
+        scenario: slide.content_json?.scenario ?? ""
+      });
+
+      const payload = {
+        title: slide.title,
+        format: slide.slide_type,
+        summary,
+        sort_order: nextOrder,
+        video_url: slide.video_url ?? null,
+        video_duration_seconds: slide.estimated_duration_seconds ?? 0,
+        require_full_watch: (slide.forced_wait_seconds ?? 0) > 0,
+        media_json: media,
+        site_tag: siteTag
+      };
+
+      // Match an existing published row so a re-publish is an update, not a duplicate.
+      publishOperation = "checking for an existing published slide";
+      const { data: existing, error: existingError } = await supabaseAdmin
+        .from("learning_sections")
+        .select("id")
+        .eq("source_slide_id", slide.id)
+        .maybeSingle();
+      if (existingError) throw existingError;
+
+      if (existing?.id) {
+        publishOperation = "updating an existing published slide";
+        const { error } = await writeWithFallback(
+          "learning_sections",
+          "update",
+          payload,
+          { id: existing.id },
+          { selectResult: false }
+        );
+        if (error) throw error;
+        updated += 1;
+      } else {
+        publishOperation = "publishing a new slide";
+        const { error } = await writeWithFallback(
+          "learning_sections",
+          "insert",
+          {
+            ...payload,
+            id: crypto.randomUUID(),
+            source_slide_id: slide.id,
+            version: course.version_label || "1.0",
+            effective_date: now,
+            created_at: now
+          },
+          undefined,
+          { selectResult: false }
+        );
+        if (error) throw error;
+        published += 1;
+      }
+      nextOrder += 1;
+    }
+
+    // Mark the variant as the live one for its site.
+    // Other courses sharing this site (or cloned from the same template) must be
+    // demoted first, otherwise the "only one current course" unique index
+    // (induction_courses_current_idx) rejects the update.
+    const now2 = now;
+    publishOperation = "updating the current course for this site";
+    const { error: demoteError } = await supabaseAdmin
+      .from("induction_courses")
+      .update({ is_current: false, updated_at: now2 })
+      .neq("id", courseId)
+      .or(`site_tag.eq.${siteTag},template_id.eq.${courseId}`);
+    if (demoteError) throw demoteError;
+
+    const { error: courseUpdateError } = await supabaseAdmin
+      .from("induction_courses")
+      .update({
+        is_current: true,
+        published_at: now2,
+        published_by: request.authUserId ?? null,
+        updated_at: now2
+      })
+      .eq("id", courseId);
+    if (courseUpdateError) throw courseUpdateError;
+
+    if (request.authUserId) {
+      await logAuditEntry(request.authUserId, "admin_course_published_to_drivers", {
+        courseId,
+        siteTag,
+        published,
+        updated
+      });
+    }
+
+    response.json({
+      message: `Published ${published + updated} slide(s) to the ${siteTag} site.`,
+      published,
+      updated,
+      siteTag
+    });
+  } catch (error) {
+    console.error(`[CMS PUBLISH] Failed while ${publishOperation}:`, error);
+    response.status(500).json({
+      message: `Course publishing failed while ${publishOperation}. Check the API server logs for the database error, then retry.`
+    });
+  }
+});
+
+// Translate a slide row into the media_json the driver's ModuleExtras reads.
+// `slideQuestions` is fetched from quiz_questions (where slide questions live),
+// not from content_json.
+function buildMediaJson(slide: Record<string, any>, slideQuestions: any[] = []) {
+  const content = slide.content_json ?? {};
+  const hasOrderedContent = Array.isArray(content.contentItems) && content.contentItems.length > 0;
+
+  const images: Array<{ url: string; caption?: string; alt?: string }> = [];
+  if (content.imageUrl) {
+    images.push({ url: String(content.imageUrl), caption: content.imageCaption ?? "", alt: String(slide.title ?? "") });
+  }
+  if (Array.isArray(content.images)) {
+    for (const img of content.images) {
+      if (img?.url) images.push({ url: String(img.url), caption: img.caption ?? "", alt: img.alt ?? "" });
+    }
+  }
+
+  const documents: Array<{ url: string; name?: string; pages?: number; requireRead?: boolean }> = [];
+  if (content.docUrl) {
+    documents.push({
+      url: String(content.docUrl),
+      name: content.docName ?? String(slide.title ?? "Document"),
+      pages: Number(content.docPages ?? 0) || undefined,
+      requireRead: Boolean(content.requireRead)
+    });
+  }
+  if (Array.isArray(content.documents)) {
+    for (const doc of content.documents) {
+      if (doc?.url) documents.push({ url: String(doc.url), name: doc.name, pages: doc.pages, requireRead: Boolean(doc.requireRead) });
+    }
+  }
+
+  const voiceover = slide.audio_url
+    ? { url: String(slide.audio_url), language: content.voiceoverLanguage ?? "en" }
+    : null;
+
+  const attachments: Array<{ url: string; name?: string }> = Array.isArray(content.attachments)
+    ? content.attachments.filter((a: any) => a?.url).map((a: any) => ({ url: String(a.url), name: a.name }))
+    : [];
+
+  const questions = slideQuestions.map((q, idx) => {
+    const type = q.question_type || "single_choice";
+    const correct = Number(q.correct_answer ?? 0);
+    const storedMulti = Array.isArray(q.correct_answers) ? q.correct_answers.map(Number) : [];
+    const storedAccepted = Array.isArray(q.accepted_answers) ? q.accepted_answers.map(String) : [];
+
+    return {
+      id: String(q.id ?? `q-${slide.id}-${idx}`),
+      prompt: String(q.question ?? ""),
+      questionType: type,
+      options: Array.isArray(q.options) ? q.options.map(String) : [],
+      correctAnswer: correct,
+      correctAnswers: type === "multiple_choice"
+        ? (storedMulti.length > 0 ? storedMulti : [correct])
+        : [correct],
+      acceptedAnswers: storedAccepted,
+      explanation: String(q.explanation ?? ""),
+      placement: q.placement || "below_slide"
+    };
+  });
+
+  return {
+    contentItems: normalizeCourseContentItems(slide),
+    images: hasOrderedContent ? [] : images,
+    documents: hasOrderedContent ? [] : documents,
+    voiceover: hasOrderedContent ? null : voiceover,
+    warning: content.warningCallout ? String(content.warningCallout) : undefined,
+    forcedWaitSeconds: Number(slide.forced_wait_seconds ?? 0) || undefined,
+    textSize: content.textSize ?? undefined,
+    questions,
+    attachments
+  };
+}
+
+app.get("/api/admin/reports/export", requireAdmin, async (request: AdminRequest, response, next) => {
+  try {
+    const format = String(request.query.format ?? "csv");
+    const scope = String(request.query.scope ?? "drivers");
+    const from = request.query.from ? new Date(String(request.query.from)) : null;
+    const to = request.query.to ? new Date(String(request.query.to)) : null;
+    const driverId = request.query.driverId ? String(request.query.driverId) : null;
+
+    if ((from && Number.isNaN(from.getTime())) || (to && Number.isNaN(to.getTime()))) {
+      throw new Error("Use a valid date range for reporting.");
+    }
+
+    let rows: Array<Record<string, string | number | boolean | null>> = [];
+    let filename = "driver-induction-report";
+    let title = `${organizationName} Driver Induction Report`;
+
+    if (scope === "audit") {
+      let query = supabaseAdmin
+        .from("audit_logs")
+        .select("id,user_id,action,metadata,created_at")
+        .order("created_at", { ascending: false });
+
+      if (driverId) query = query.eq("user_id", driverId);
+      if (from) query = query.gte("created_at", from.toISOString());
+      if (to) query = query.lte("created_at", to.toISOString());
+
+      const { data: auditLogs, error: auditError } = await query;
+      if (auditError) throw auditError;
+
+      rows = (auditLogs ?? []).map((log) => ({
+        id: log.id,
+        userId: log.user_id,
+        action: log.action,
+        metadata: JSON.stringify(log.metadata ?? {}),
+        createdAt: log.created_at
+      }));
+      filename = "audit-log-report";
+      title = `${organizationName} Audit Log Report`;
+    } else {
+      const [{ data: profiles, error: profileError }, { data: drivers, error: driversError }, { data: progress, error: progressError }] =
+        await Promise.all([
+          supabaseAdmin.from("profiles").select("id,email,full_name").eq("role", "driver"),
+          supabaseAdmin.from("drivers").select("user_id,status"),
+          supabaseAdmin.from("induction_progress").select("user_id,current_step,completion_percentage,quiz_score,completed_at,updated_at")
+        ]);
+
+      if (profileError) throw profileError;
+      if (driversError) throw driversError;
+      if (progressError) throw progressError;
+
+      rows = (profiles ?? [])
+        .filter((profile) => !driverId || profile.id === driverId)
+        .map((profile) => {
+          const driver = (drivers ?? []).find((item) => item.user_id === profile.id);
+          const progressRow = (progress ?? []).find((item) => item.user_id === profile.id);
+          return {
+            driverId: profile.id,
+            fullName: profile.full_name ?? "",
+            email: profile.email ?? "",
+            status: driver?.status ?? "Not Started",
+            progress: progressRow?.completion_percentage ?? 0,
+            currentStep: progressRow?.current_step ?? 1,
+            quizScore: progressRow?.quiz_score ?? null,
+            completedAt: progressRow?.completed_at ?? null,
+            updatedAt: progressRow?.updated_at ?? null
+          };
+        })
+        .filter((row) => {
+          if (!from && !to) return true;
+          const reference = row.completedAt ?? row.updatedAt;
+          if (!reference) return false;
+          const timestamp = new Date(String(reference)).getTime();
+          if (Number.isNaN(timestamp)) return false;
+          if (from && timestamp < from.getTime()) return false;
+          if (to && timestamp > to.getTime()) return false;
+          return true;
+        });
+
+      if (driverId) {
+        filename = "driver-report";
+        title = `${organizationName} Driver Report`;
+      }
+    }
+
+    if (request.authUserId) {
+      await logAuditEntry(request.authUserId, "admin_report_exported", {
+        format,
+        scope,
+        driverId,
+        from: from?.toISOString() ?? null,
+        to: to?.toISOString() ?? null,
+        rowCount: rows.length
+      });
+    }
+
+    if (format === "pdf") {
+      const pdfBuffer = generateReportPdfBuffer({
+        title,
+        organizationName,
+        rows
+      });
+      response.setHeader("Content-Type", "application/pdf");
+      response.setHeader("Content-Disposition", `attachment; filename="${filename}.pdf"`);
+      response.send(pdfBuffer);
+      return;
+    }
+
+    const header = Object.keys(rows[0] ?? { message: "" });
+    // M-5 FIX: Use RFC 4180 CSV escaping (double quotes) not JSON escaping (backslash-quote).
+    // JSON.stringify produced \"value\" which Excel and Sheets cannot parse.
+    function csvEscape(value: unknown): string {
+      const str = String(value ?? "");
+      // If the string contains commas, newlines, or quotes, wrap in double-quotes
+      if (str.includes(",") || str.includes("\n") || str.includes("\"")) {
+        return `"${str.replace(/"/g, '""')}"`;
+      }
+      return str;
+    }
+    const csv = [
+      header.join(","),
+      ...(rows.length
+        ? rows.map((row) => header.map((key) => csvEscape(row[key as keyof typeof row])).join(","))
+        : ['"No records found for the selected filters."'])
+    ].join("\n");
+    response.setHeader("Content-Type", "text/csv");
+    response.setHeader("Content-Disposition", `attachment; filename="${filename}.csv"`);
+    response.send(csv);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /api/admin/reports/overview - Get reports overview metrics
+app.get("/api/admin/reports/overview", requireAdmin, async (request: AdminRequest, response, next) => {
+  try {
+    const { data: profiles, error: profileError } = await supabaseAdmin
+      .from("profiles")
+      .select("id")
+      .eq("role", "driver");
+
+    if (profileError) throw profileError;
+    const totalDrivers = profiles?.length ?? 0;
+
+    const { data: progress, error: progressError } = await supabaseAdmin
+      .from("induction_progress")
+      .select("user_id, current_step, completion_percentage, quiz_score, completed_at, updated_at");
+
+    if (progressError) throw progressError;
+
+    const attemptedInductions = progress?.filter(p => p.current_step > 1 || p.completed_at).length ?? 0;
+
+    const { data: certificates, error: certError } = await supabaseAdmin
+      .from("certificates")
+      .select("id, user_id, issued_at, expires_at, induction_version_id")
+      .not("expires_at", "is", null);
+
+    if (certError) throw certError;
+
+    const now = new Date();
+    const thirtyDaysFromNow = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+
+    const validCertificates = certificates?.filter(c => new Date(c.expires_at!) > thirtyDaysFromNow).length ?? 0;
+    const expiringCertificates = certificates?.filter(c => {
+      const exp = new Date(c.expires_at!);
+      return exp > now && exp <= thirtyDaysFromNow;
+    }).length ?? 0;
+    const expiredCertificates = certificates?.filter(c => new Date(c.expires_at!) <= now).length ?? 0;
+
+    const { data: documents, error: docError } = await supabaseAdmin
+      .from("documents")
+      .select("id, user_id, status, expires_at")
+      .not("expires_at", "is", null);
+
+    if (docError) throw docError;
+
+    const expiringDocuments = documents?.filter(d => {
+      const exp = new Date(d.expires_at!);
+      return exp > now && exp <= thirtyDaysFromNow;
+    }).length ?? 0;
+
+    const pendingApprovals = documents?.filter(d => d.status === "pending").length ?? 0;
+
+    const { data: enrollments, error: enrollError } = await supabaseAdmin
+      .from("induction_schedule_enrollments")
+      .select("id, status")
+      .eq("status", "active");
+
+    if (enrollError) throw enrollError;
+
+    const activeSchedules = enrollments?.length ?? 0;
+
+    const { data: allEnrollments, error: allEnrollError } = await supabaseAdmin
+      .from("induction_schedule_enrollments")
+      .select("id, status");
+
+    if (allEnrollError) throw allEnrollError;
+
+    const overdueSchedules = allEnrollments?.filter(e => e.status === "active").length ?? 0;
+
+    response.json({
+      totalDrivers,
+      attemptedInductions,
+      validCertificates,
+      expiringCertificates,
+      expiredCertificates,
+      expiringDocuments,
+      pendingApprovals,
+      activeSchedules,
+      overdueSchedules
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /api/admin/reports/attempted-inductions
+app.get("/api/admin/reports/attempted-inductions", requireAdmin, async (request: AdminRequest, response, next) => {
+  try {
+    const { data: progress, error: progressError } = await supabaseAdmin
+      .from("induction_progress")
+      .select("user_id, current_step, completion_percentage, quiz_score, completed_at, updated_at, induction_version_id")
+      .order("updated_at", { ascending: false });
+
+    if (progressError) throw progressError;
+
+    const { data: profiles, error: profileError } = await supabaseAdmin
+      .from("profiles")
+      .select("id, full_name, email")
+      .eq("role", "driver");
+
+    if (profileError) throw profileError;
+
+    const { data: versions, error: versionError } = await supabaseAdmin
+      .from("induction_versions")
+      .select("id, version_label");
+
+    if (versionError) throw versionError;
+
+    const versionMap = new Map((versions ?? []).map(v => [v.id, v.version_label]));
+
+    const rows = (progress ?? []).map(p => {
+      const profile = (profiles ?? []).find(pr => pr.id === p.user_id);
+      return {
+        driverId: p.user_id,
+        driverName: profile?.full_name ?? "",
+        driverEmail: profile?.email ?? "",
+        inductionVersion: p.induction_version_id ? versionMap.get(p.induction_version_id) ?? "1.0" : "1.0",
+        attemptCount: p.current_step > 1 ? 1 : 0,
+        lastAttemptAt: p.updated_at,
+        completedAt: p.completed_at,
+        status: p.completed_at ? "Completed" : p.current_step > 1 ? "In Progress" : "Not Started",
+        quizScore: p.quiz_score,
+        timeSpentHours: null
+      };
+    });
+
+    response.json(rows);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /api/admin/reports/certificate-statuses
+app.get("/api/admin/reports/certificate-statuses", requireAdmin, async (request: AdminRequest, response, next) => {
+  try {
+    const { data: certificates, error: certError } = await supabaseAdmin
+      .from("certificates")
+      .select("id, user_id, issued_at, expires_at, verification_code, induction_version_id")
+      .not("expires_at", "is", null);
+
+    if (certError) throw certError;
+
+    const { data: profiles, error: profileError } = await supabaseAdmin
+      .from("profiles")
+      .select("id, full_name, email")
+      .eq("role", "driver");
+
+    if (profileError) throw profileError;
+
+    const { data: versions, error: versionError } = await supabaseAdmin
+      .from("induction_versions")
+      .select("id, version_label");
+
+    if (versionError) throw versionError;
+
+    const versionMap = new Map((versions ?? []).map(v => [v.id, v.version_label]));
+    const now = new Date();
+    const thirtyDaysFromNow = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+
+    const rows = (certificates ?? []).map(c => {
+      const profile = (profiles ?? []).find(p => p.id === c.user_id);
+      const expDate = new Date(c.expires_at!);
+      const daysUntilExpiry = Math.ceil((expDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+      let status: "Valid" | "Expiring Soon" | "Expired" | "Revoked" = "Valid";
+      if (expDate <= now) status = "Expired";
+      else if (expDate <= thirtyDaysFromNow) status = "Expiring Soon";
+
+      return {
+        driverId: c.user_id,
+        driverName: profile?.full_name ?? "",
+        driverEmail: profile?.email ?? "",
+        certificateId: c.id,
+        verificationCode: c.verification_code,
+        issuedAt: c.issued_at,
+        expiresAt: c.expires_at,
+        status,
+        daysUntilExpiry: expDate > now ? daysUntilExpiry : null,
+        inductionVersion: c.induction_version_id ? versionMap.get(c.induction_version_id) ?? "1.0" : "1.0"
+      };
+    });
+
+    response.json(rows);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /api/admin/reports/expiring-certificates
+app.get("/api/admin/reports/expiring-certificates", requireAdmin, async (request: AdminRequest, response, next) => {
+  try {
+    const { data: certificates, error: certError } = await supabaseAdmin
+      .from("certificates")
+      .select("id, user_id, issued_at, expires_at, verification_code, induction_version_id")
+      .not("expires_at", "is", null);
+
+    if (certError) throw certError;
+
+    const { data: profiles, error: profileError } = await supabaseAdmin
+      .from("profiles")
+      .select("id, full_name, email")
+      .eq("role", "driver");
+
+    if (profileError) throw profileError;
+
+    const { data: versions, error: versionError } = await supabaseAdmin
+      .from("induction_versions")
+      .select("id, version_label");
+
+    if (versionError) throw versionError;
+
+    const versionMap = new Map((versions ?? []).map(v => [v.id, v.version_label]));
+    const now = new Date();
+    const thirtyDaysFromNow = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+
+    const rows = (certificates ?? [])
+      .filter(c => {
+        const expDate = new Date(c.expires_at!);
+        return expDate > now && expDate <= thirtyDaysFromNow;
+      })
+      .map(c => {
+        const profile = (profiles ?? []).find(p => p.id === c.user_id);
+        const expDate = new Date(c.expires_at!);
+        const daysUntilExpiry = Math.ceil((expDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+
+        return {
+          driverId: c.user_id,
+          driverName: profile?.full_name ?? "",
+          driverEmail: profile?.email ?? "",
+          certificateId: c.id,
+          verificationCode: c.verification_code,
+          expiresAt: c.expires_at,
+          daysUntilExpiry,
+          inductionVersion: c.induction_version_id ? versionMap.get(c.induction_version_id) ?? "1.0" : "1.0"
+        };
+      });
+
+    response.json(rows);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /api/admin/reports/expiring-documents
+app.get("/api/admin/reports/expiring-documents", requireAdmin, async (request: AdminRequest, response, next) => {
+  try {
+    const { data: documents, error: docError } = await supabaseAdmin
+      .from("documents")
+      .select("id, user_id, file_name, type, expires_at, status")
+      .not("expires_at", "is", null);
+
+    if (docError) throw docError;
+
+    const { data: profiles, error: profileError } = await supabaseAdmin
+      .from("profiles")
+      .select("id, full_name, email")
+      .eq("role", "driver");
+
+    if (profileError) throw profileError;
+
+    const now = new Date();
+    const thirtyDaysFromNow = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+
+    const rows = (documents ?? [])
+      .filter(d => {
+        const expDate = new Date(d.expires_at!);
+        return expDate > now && expDate <= thirtyDaysFromNow;
+      })
+      .map(d => {
+        const profile = (profiles ?? []).find(p => p.id === d.user_id);
+        const expDate = new Date(d.expires_at!);
+        const daysUntilExpiry = Math.ceil((expDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+
+        return {
+          driverId: d.user_id,
+          driverName: profile?.full_name ?? "",
+          driverEmail: profile?.email ?? "",
+          documentId: d.id,
+          documentName: d.file_name ?? d.type?.replace(/_/g, " ") ?? "Document",
+          documentType: d.type,
+          expiresAt: d.expires_at,
+          daysUntilExpiry,
+          status: d.status === "approved" ? "Approved" : d.status === "rejected" ? "Rejected" : "Pending"
+        };
+      });
+
+    response.json(rows);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /api/admin/reports/documents-for-approval
+app.get("/api/admin/reports/documents-for-approval", requireAdmin, async (request: AdminRequest, response, next) => {
+  try {
+    const { data: documents, error: docError } = await supabaseAdmin
+      .from("documents")
+      .select("id, user_id, file_name, type, status, uploaded_at, rejection_reason")
+      .eq("status", "pending");
+
+    if (docError) throw docError;
+
+    const { data: profiles, error: profileError } = await supabaseAdmin
+      .from("profiles")
+      .select("id, full_name, email")
+      .eq("role", "driver");
+
+    if (profileError) throw profileError;
+
+    const rows = (documents ?? []).map(d => {
+      const profile = (profiles ?? []).find(p => p.id === d.user_id);
+      return {
+        driverId: d.user_id,
+        driverName: profile?.full_name ?? "",
+        driverEmail: profile?.email ?? "",
+        documentId: d.id,
+        documentName: d.file_name ?? d.type?.replace(/_/g, " ") ?? "Document",
+        documentType: d.type,
+        uploadedAt: d.uploaded_at,
+        status: d.status === "approved" ? "Approved" : d.status === "rejected" ? "Rejected" : "Pending",
+        rejectionReason: d.rejection_reason
+      };
+    });
+
+    response.json(rows);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /api/admin/reports/scheduled-status
+app.get("/api/admin/reports/scheduled-status", requireAdmin, async (request: AdminRequest, response, next) => {
+  try {
+    // Items are fetched separately so a missing `title` column (pre-migration-014)
+    // degrades titles instead of failing the whole report.
+    const { data: items, error: itemsError } = await supabaseAdmin
+      .from("induction_schedule_items")
+      .select("id, schedule_id, sequence_order, title")
+      .order("sequence_order", { ascending: true });
+
+    if (itemsError) throw itemsError;
+
+    const { data: enrollments, error: enrollError } = await supabaseAdmin
+      .from("induction_schedule_enrollments")
+      .select("id, driver_id, schedule_id, status, current_item_index, enrolled_at, completed_at");
+
+    if (enrollError) throw enrollError;
+
+    const { data: schedules, error: scheduleError } = await supabaseAdmin
+      .from("induction_schedules")
+      .select("id, name");
+
+    if (scheduleError) throw scheduleError;
+
+    const { data: profiles, error: profileError } = await supabaseAdmin
+      .from("profiles")
+      .select("id, full_name, email")
+      .eq("role", "driver");
+
+    if (profileError) throw profileError;
+
+    const scheduleMap = new Map((schedules ?? []).map(s => [s.id, s.name]));
+    const itemsBySchedule = new Map<string, Array<{ sequence_order: number; title: string | null }>>();
+    for (const item of items ?? []) {
+      const list = itemsBySchedule.get(item.schedule_id) ?? [];
+      list.push({ sequence_order: item.sequence_order, title: item.title ?? null });
+      itemsBySchedule.set(item.schedule_id, list);
+    }
+
+    const rows = (enrollments ?? []).map(e => {
+      const profile = (profiles ?? []).find(p => p.id === e.driver_id);
+      const scheduleItems = itemsBySchedule.get(e.schedule_id) ?? [];
+      const totalItems = scheduleItems.length;
+      const currentIndex = e.current_item_index;
+      const currentItem = scheduleItems.find(i => i.sequence_order === currentIndex + 1);
+      const nextItem = scheduleItems.find(i => i.sequence_order === currentIndex + 2);
+
+      let status: "Active" | "Completed" | "Overdue" | "Paused" | "Cancelled" = "Active";
+      if (e.status === "completed" || e.completed_at) status = "Completed";
+      else if (e.status === "paused") status = "Paused";
+      else if (e.status === "cancelled") status = "Cancelled";
+      else if (totalItems > 0 && currentIndex >= totalItems) status = "Completed";
+
+      return {
+        driverId: e.driver_id,
+        driverName: profile?.full_name ?? "",
+        driverEmail: profile?.email ?? "",
+        scheduleId: e.schedule_id,
+        scheduleName: scheduleMap.get(e.schedule_id) ?? "",
+        enrollmentId: e.id,
+        status,
+        currentItemIndex: currentIndex,
+        totalItems,
+        currentItemTitle: currentItem?.title ?? null,
+        nextItemTitle: nextItem?.title ?? null,
+        enrolledAt: e.enrolled_at,
+        completedAt: e.completed_at,
+        nextDueAt: null
+      };
+    });
+
+    response.json(rows);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Public driver ID verification (scanned from a driver QR badge)
+app.get("/api/driver/verify/:driverId", rateLimit(30, 60_000), async (request, response, next) => {
+  try {
+    const driverId = String(request.params.driverId).trim();
+    if (!driverId || !/^[A-Za-z0-9-]+$/.test(driverId)) {
+      response.status(400).json({ verified: false, message: "Invalid driver ID." });
+      return;
+    }
+
+    const driverSelect = "*, profiles:user_id (full_name, phone, licence_class)";
+
+    // The QR badge encodes the driver's user id; fall back to the drivers table id
+    let { data: driver, error } = await supabaseAdmin
+      .from("drivers")
+      .select(driverSelect)
+      .eq("user_id", driverId)
+      .maybeSingle();
+    if (error) throw error;
+    if (!driver) {
+      const byDriverId = await supabaseAdmin
+        .from("drivers")
+        .select(driverSelect)
+        .eq("id", driverId)
+        .maybeSingle();
+      if (byDriverId.error) throw byDriverId.error;
+      driver = byDriverId.data;
+    }
+    if (!driver) {
+      response.status(404).json({ verified: false, message: "Driver not found." });
+      return;
+    }
+
+    // Induction progress and certificates link via profiles.user_id,
+    // so query them separately (no direct FK from drivers)
+    const { data: induction } = await supabaseAdmin
+      .from("induction_progress")
+      .select("completed_at, current_step")
+      .eq("user_id", driver.user_id)
+      .maybeSingle();
+    const { data: certificate } = await supabaseAdmin
+      .from("certificates")
+      .select("expires_at, issued_at")
+      .eq("user_id", driver.user_id)
+      .maybeSingle();
+
+    const completed = driver.status === "Completed" || induction?.completed_at != null;
+
+    response.json({
+      verified: true,
+      organizationName,
+      driver: {
+        driverId: driver.id,
+        fullName: driver.profiles?.full_name ?? "",
+        phone: driver.profiles?.phone ?? "",
+        licenceClass: driver.profiles?.licence_class ?? "",
+        inductionStatus: driver.status ?? "Not Started",
+        inductionCompleted: Boolean(completed),
+        completedAt: induction?.completed_at ?? null,
+        certificateExpiresAt: certificate?.expires_at ?? null
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/certificate/verify/:code", rateLimit(30, 60_000), async (request, response, next) => {
+  try {
+    const code = String(request.params.code).trim();
+    // Accept either the verification code (VERIFY-…) or the completion id
+    // (COMP-…) that is printed as the "Verification ID" on the certificate,
+    // so any code shown on the certificate can be verified.
+    if (!code || !/^[A-Za-z0-9-]+$/.test(code)) {
+      if (request.headers.accept?.includes("text/html")) {
+        response.status(404).setHeader("Content-Type", "text/html; charset=utf-8");
+        response.send(renderVerificationErrorPage(organizationName, organizationLogoUrl));
+        return;
+      }
+      response.status(400).json({ verified: false, message: "Invalid verification code." });
+      return;
+    }
+    const { data: certificate, error: certificateError } = await supabaseAdmin
+      .from("certificates")
+      .select("*")
+      .or(`verification_code.eq.${code},completion_id.eq.${code}`)
+      .maybeSingle();
+    if (certificateError || !certificate) {
+      if (request.headers.accept?.includes("text/html")) {
+        response.status(404).setHeader("Content-Type", "text/html; charset=utf-8");
+        response.send(renderVerificationErrorPage(organizationName, organizationLogoUrl));
+        return;
+      }
+      response.status(404).json({ verified: false, message: "Certificate not found." });
+      return;
+    }
+    if (certificate.revoked_at || !isCurrentOnboardingDate(certificate.expires_at)) {
+      const message = certificate.revoked_at ? "This certificate has been revoked." : "This certificate has expired.";
+      if (request.headers.accept?.includes("text/html")) {
+        response.status(410).setHeader("Content-Type", "text/html; charset=utf-8");
+        response.send(renderVerificationErrorPage(organizationName, organizationLogoUrl));
+        return;
+      }
+      response.status(410).json({ verified: false, message });
+      return;
+    }
+
+    const { data: profile, error: profileError } = await supabaseAdmin
+      .from("profiles")
+      .select("full_name, licence_class, issuing_state, depot_location")
+      .eq("id", certificate.user_id)
+      .maybeSingle();
+    if (profileError || !profile) {
+      // Profile not found, continue with empty profile data
+    }
+
+    const payload = {
+      verified: true,
+      organizationName,
+      certificate: {
+        completionId: certificate.completion_id,
+        verificationCode: certificate.verification_code,
+        verificationUrl: `${appUrl}/certificate/verify/${certificate.verification_code}`,
+        issuedAt: certificate.issued_at,
+        expiresAt: certificate.expires_at
+      },
+      driver: {
+        fullName: profile?.full_name ?? ""
+      },
+      licenceClass: profile?.licence_class ?? null,
+      issuingState: profile?.issuing_state ?? null,
+      depotLocation: profile?.depot_location ?? null
+    };
+
+    if (request.headers.accept?.includes("text/html")) {
+      response.setHeader("Content-Type", "text/html; charset=utf-8");
+      response.send(renderVerificationPage(payload, organizationLogoUrl));
+      return;
+    }
+
+    response.json(payload);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Public vehicle site-pass verification (scanned from a vehicle QR pass).
+// Returns the vehicle's identity, driver and compliance dates so a guard can
+// check the truck independently of the driver's induction certificate.
+app.get("/api/vehicle/verify/:passCode", rateLimit(30, 60_000), async (request, response, next) => {
+  try {
+    const passCode = String(request.params.passCode).trim();
+    if (!passCode || !/^[A-Za-z0-9-]+$/.test(passCode)) {
+      response.status(400).json({ verified: false, message: "Invalid pass code." });
+      return;
+    }
+
+    const { data: vehicle, error: vehicleError } = await supabaseAdmin
+      .from("driver_vehicles")
+      .select("*, profiles:user_id (full_name, email)")
+      .eq("qr_pass_code", passCode)
+      .maybeSingle();
+    if (vehicleError) throw vehicleError;
+    if (!vehicle) {
+      response.status(404).json({ verified: false, message: "Vehicle pass not found." });
+      return;
+    }
+
+    response.json({
+      verified: true,
+      organizationName,
+      vehicle: {
+        passCode: vehicle.qr_pass_code,
+        rego: vehicle.rego,
+        makeModel: vehicle.make_model,
+        bodyType: vehicle.body_type ?? null,
+        branchName: vehicle.branch_name ?? null,
+        status: vehicle.status,
+        regoExpiryDate: vehicle.rego_expiry_date ?? null,
+        dgExpiryDate: vehicle.dg_expiry_date ?? null,
+        scbaServiceDueDate: vehicle.scba_service_due_date ?? null
+      },
+      driver: {
+        fullName: vehicle.profiles?.full_name ?? "",
+        email: vehicle.profiles?.email ?? ""
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+function renderVerificationPage(
+  payload: {
+    organizationName: string;
+    certificate: { completionId: string; verificationCode: string; verificationUrl: string; issuedAt: string };
+    driver: { fullName: string };
+  },
+  logoUrl: string
+) {
+  const logo = logoUrl
+    ? `<img src="${logoUrl}" alt="${payload.organizationName} logo" style="height:56px;max-width:180px;object-fit:contain;" />`
+    : `<div style="font-weight:700;font-size:18px;">${payload.organizationName}</div>`;
+
+  return `<!doctype html>
+  <html lang="en">
+    <head>
+      <meta charset="utf-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1" />
+      <title>Certificate Verification</title>
+      <style>
+        body{margin:0;font-family:Inter,system-ui,sans-serif;background:linear-gradient(180deg,#eef4ff,#dbeafe);color:#10213a}
+        .wrap{min-height:100vh;display:grid;place-items:center;padding:24px}
+        .card{max-width:760px;width:100%;background:rgba(255,255,255,.82);backdrop-filter:blur(14px);border:1px solid rgba(148,163,184,.22);border-radius:28px;padding:32px;box-shadow:0 24px 60px rgba(37,99,235,.14)}
+        .badge{display:inline-flex;padding:8px 12px;border-radius:999px;background:rgba(34,197,94,.14);color:#166534;font-weight:700;margin-bottom:16px}
+        .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px;margin-top:24px}
+        .item{padding:16px;border-radius:18px;background:rgba(239,246,255,.9);border:1px solid rgba(148,163,184,.18)}
+        small{color:#5b6b84;display:block;margin-top:6px}
+        a{color:#2563eb;text-decoration:none}
+      </style>
+    </head>
+    <body>
+      <div class="wrap">
+        <div class="card">
+          ${logo}
+          <div class="badge">Certificate verified</div>
+          <h1 style="margin:0 0 8px;">Driver induction completed</h1>
+          <p style="margin:0;color:#5b6b84;">This certificate is valid and was issued by ${payload.organizationName}.</p>
+          <div class="grid">
+            <div class="item"><strong>Driver</strong><small>${payload.driver.fullName}</small></div>
+            <div class="item"><strong>Verification ID</strong><small>${payload.certificate.completionId}</small></div>
+            <div class="item"><strong>Verification code</strong><small>${payload.certificate.verificationCode}</small></div>
+            <div class="item"><strong>Issued</strong><small>${new Date(payload.certificate.issuedAt).toLocaleString()}</small></div>
+          </div>
+          <p style="margin-top:24px;"><a href="${payload.certificate.verificationUrl}">Open verification link</a></p>
+        </div>
+      </div>
+    </body>
+  </html>`;
+}
+
+function renderVerificationErrorPage(organizationName: string, logoUrl: string) {
+  const logo = logoUrl
+    ? `<img src="${logoUrl}" alt="${organizationName} logo" style="height:56px;max-width:180px;object-fit:contain;" />`
+    : `<div style="font-weight:700;font-size:18px;">${organizationName}</div>`;
+
+  return `<!doctype html>
+  <html lang="en">
+    <head>
+      <meta charset="utf-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1" />
+      <title>Certificate Not Found</title>
+      <style>
+        body{margin:0;font-family:Inter,system-ui,sans-serif;background:linear-gradient(180deg,#eef4ff,#dbeafe);color:#10213a}
+        .wrap{min-height:100vh;display:grid;place-items:center;padding:24px}
+        .card{max-width:760px;width:100%;background:rgba(255,255,255,.82);backdrop-filter:blur(14px);border:1px solid rgba(148,163,184,.22);border-radius:28px;padding:32px;box-shadow:0 24px 60px rgba(37,99,235,.14)}
+        .badge{display:inline-flex;padding:8px 12px;border-radius:999px;background:rgba(239,68,68,.12);color:#991b1b;font-weight:700;margin-bottom:16px}
+        p{color:#5b6b84}
+      </style>
+    </head>
+    <body>
+      <div class="wrap">
+        <div class="card">
+          ${logo}
+          <div class="badge">Verification failed</div>
+          <h1 style="margin:0 0 8px;">Certificate not found</h1>
+          <p>The verification code is invalid, missing, or no longer linked to a certificate record.</p>
+        </div>
+      </div>
+    </body>
+  </html>`;
+}
+
+// --- Document validation endpoint ---
+app.post("/api/documents/verify", rateLimit(10, 60_000), requireDriver, async (request: AdminRequest, response, next) => {
+  try {
+    const { documentType, userId } = request.body as { documentType: string; userId: string; fileUrl: string };
+    if (!userId || !documentType) {
+      response.status(400).json({ message: "userId and documentType are required." });
+      return;
+    }
+
+    if (request.authUserId !== userId) {
+      response.status(403).json({ message: "Forbidden: You can only verify your own documents." });
+      return;
+    }
+
+    // Verify document exists in DB for this driver
+    const { data: doc, error: docError } = await supabaseAdmin
+      .from("documents")
+      .select("id, type, mime_type, size_bytes, uploaded_at, expires_at")
+      .eq("user_id", userId)
+      .eq("type", documentType)
+      .order("uploaded_at", { ascending: false })
+      .limit(1)
+      .single();
+
+    if (docError || !doc) {
+      response.status(404).json({ message: "Document not found for this driver." });
+      return;
+    }
+
+    const isExpired = doc.expires_at ? new Date(doc.expires_at) < new Date() : false;
+    const validMimeTypes = ["application/pdf", "image/jpeg", "image/png", "image/jpg"];
+    const hasValidType = !doc.mime_type || validMimeTypes.includes(String(doc.mime_type));
+
+    response.json({
+      message: "Document validated.",
+      data: {
+        isValid: !isExpired && hasValidType,
+        documentType: doc.type,
+        uploadedAt: doc.uploaded_at,
+        expiresAt: doc.expires_at ?? null,
+        isExpired
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+interface NotificationParams {
+  eventType: "driver_created" | "induction_completed" | "induction_expiring" | "password_reset";
+  userEmail: string;
+  driverName?: string;
+  context: Record<string, string>;
+}
+
+async function sendNotificationService(params: NotificationParams): Promise<boolean> {
+  const { eventType, userEmail, driverName, context } = params;
+  const smtpUser = process.env.SMTP_USER;
+  const smtpPass = process.env.SMTP_PASS;
+  const fromEmail = process.env.RESEND_FROM_EMAIL ?? process.env.SMTP_USER ?? "admin@bntlogistics.com.au";
+  const name = driverName ?? "Driver";
+  let subject = "";
+  let html = "";
+
+  if (eventType === "driver_created") {
+    subject = `Welcome to ${organizationName} — Your Induction Account Is Ready`;
+    html = `<div style="font-family:system-ui,sans-serif;max-width:600px;margin:auto;padding:32px">
+      <h2 style="color:#1e3a5f">Welcome, ${name}!</h2>
+      <p>Your induction account has been created at <strong>${organizationName}</strong>.</p>
+      <p><strong>Login Email:</strong> ${userEmail}<br/>
+         <strong>Temporary Password:</strong> ${context.temporaryPassword ?? "(provided by your admin)"}</p>
+      <p><a href="${appUrl}" style="display:inline-block;background:#1e3a5f;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none">Start Your Induction</a></p>
+      <p style="color:#888;font-size:12px">Please change your password after your first login.</p>
+    </div>`;
+  } else if (eventType === "induction_completed") {
+    const expiry = context.expiresAt ? new Date(context.expiresAt).toLocaleDateString("en-AU", { day: "numeric", month: "long", year: "numeric" }) : "12 months from today";
+    subject = `Induction Complete — Certificate Issued by ${organizationName}`;
+    html = `<div style="font-family:system-ui,sans-serif;max-width:600px;margin:auto;padding:32px">
+      <h2 style="color:#1e3a5f">Congratulations, ${name}!</h2>
+      <p>You have successfully completed the <strong>${organizationName}</strong> Driver Induction Program.</p>
+      <p>Your certificate is valid for <strong>12 months</strong> and expires on <strong>${expiry}</strong>.</p>
+      <p><a href="${context.certificateUrl}" style="display:inline-block;background:#1e3a5f;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none">View Certificate</a></p>
+    </div>`;
+  } else if (eventType === "induction_expiring") {
+    subject = `Action Required — Your Induction Certificate is Expiring`;
+    html = `<div style="font-family:system-ui,sans-serif;max-width:600px;margin:auto;padding:32px">
+      <h2 style="color:#b45309">Certificate Expiring Soon</h2>
+      <p>Hi ${name}, your <strong>${organizationName}</strong> induction certificate expires on <strong>${context.expiryDate}</strong>.</p>
+      <p>Please log in and complete your renewal before then to stay compliant.</p>
+      <p><a href="${appUrl}" style="display:inline-block;background:#b45309;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none">Renew Now</a></p>
+    </div>`;
+  } else if (eventType === "password_reset") {
+    subject = `Password Reset — Your ${organizationName} Account`;
+    html = `<div style="font-family:system-ui,sans-serif;max-width:600px;margin:auto;padding:32px">
+      <h2 style="color:#1e3a5f">Password Reset, ${name}!</h2>
+      <p>An administrator has reset your password for the <strong>${organizationName}</strong> Driver Induction System.</p>
+      <p><strong>Login Email:</strong> ${userEmail}<br/>
+         <strong>New Temporary Password:</strong> ${context.temporaryPassword ?? "(contact your admin)"}</p>
+      <p><a href="${appUrl}" style="display:inline-block;background:#1e3a5f;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none">Login Now</a></p>
+      <p style="color:#888;font-size:12px">Please change your password after your first login for security.</p>
+    </div>`;
+  }
+
+  const resendKey = process.env.RESEND_API_KEY;
+  if (resendKey) {
+    try {
+      const resendRes = await fetch("https://api.resend.com/emails", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${resendKey}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          from: process.env.RESEND_FROM_EMAIL || "onboarding@resend.dev",
+          to: [userEmail],
+          subject,
+          html
+        })
+      });
+      if (resendRes.ok) {
+        console.log(`[EMAIL DISPATCH] Sent via Resend API to: ${userEmail}`);
+        return true;
+      }
+      const resendError = await resendRes.json().catch(() => ({})) as { message?: string; name?: string };
+      const reason = resendError.message || resendError.name || "No error details returned";
+      console.warn(`[RESEND] Email dispatch returned HTTP ${resendRes.status}: ${reason}; trying SMTP if configured.`);
+    } catch (e: any) {
+      console.warn("[RESEND] API dispatch failed, trying SMTP:", e?.message);
+    }
+  }
+
+  if (smtpUser && smtpPass) {
+    const transporter = nodemailer.createTransport({
+      host: process.env.SMTP_HOST ?? "smtp.office365.com",
+      port: Number(process.env.SMTP_PORT ?? 587),
+      secure: false,
+      auth: {
+        user: smtpUser,
+        pass: smtpPass
+      }
+    });
+
+    try {
+      await transporter.sendMail({
+        from: fromEmail,
+        to: userEmail,
+        subject,
+        html
+      });
+      console.log(`[EMAIL DISPATCH] Sent via SMTP to: ${userEmail}`);
+      return true;
+    } catch (err: any) {
+      throw new Error(`SMTP email dispatch failed: ${err.message}`);
+    }
+  } else {
+    // SMTP credentials not configured — add SMTP_USER and SMTP_PASS to .env to enable email sending
+    console.warn(`[EMAIL] No provider credentials configured. Email NOT sent to ${userEmail}. Configure RESEND_API_KEY or SMTP_USER and SMTP_PASS in the API environment.`);
+    return false;
+  }
+}
+
+async function sendOutboxEmail(to: string, subject: string, html: string, idempotencyKey: string): Promise<string | void> {
+  const resendKey = process.env.RESEND_API_KEY;
+  const from = process.env.RESEND_FROM_EMAIL ?? process.env.SMTP_USER ?? "admin@bntlogistics.com.au";
+  if (resendKey) {
+    const response = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${resendKey}`,
+        "Content-Type": "application/json",
+        "Idempotency-Key": idempotencyKey
+      },
+      body: JSON.stringify({ from, to: [to], subject, html })
+    });
+    if (!response.ok) {
+      const details = await response.text();
+      throw new Error(`Resend returned HTTP ${response.status}: ${details.slice(0, 500)}`);
+    }
+    const result = await response.json() as { id?: string };
+    return result.id;
+  }
+
+  const smtpUser = process.env.SMTP_USER;
+  const smtpPass = process.env.SMTP_PASS;
+  if (!smtpUser || !smtpPass) {
+    throw new Error("No email provider is configured. Set RESEND_API_KEY or SMTP_USER and SMTP_PASS.");
+  }
+  const transporter = nodemailer.createTransport({
+    host: process.env.SMTP_HOST ?? "smtp.office365.com",
+    port: Number(process.env.SMTP_PORT ?? 587),
+    secure: false,
+    auth: { user: smtpUser, pass: smtpPass }
+  });
+  const result = await transporter.sendMail({ from, to, subject, html });
+  return result.messageId;
+}
+
+app.post("/api/notifications/notify", rateLimit(20, 60_000), requireAdmin, async (request: AdminRequest, response, next) => {
+  try {
+    const notifySchema = z.object({
+      eventType: z.enum(["driver_created", "induction_completed", "induction_expiring", "password_reset", "document_expiring"]),
+      userEmail: z.string().email(),
+      driverId: z.string().uuid().optional(),
+      driverName: z.string().optional(),
+      context: z.record(z.string()).optional()
+    });
+    const body = notifySchema.parse(request.body);
+    if (body.eventType === "document_expiring" || body.eventType === "induction_expiring") {
+      if (!body.driverId) {
+        response.status(400).json({ message: "A worker account is required for expiry reminders." });
+        return;
+      }
+      const { data: worker, error: workerError } = await supabaseAdmin.from("profiles").select("id, email, full_name").eq("id", body.driverId).eq("role", "driver").maybeSingle();
+      if (workerError) throw workerError;
+      if (!worker?.email || worker.email.toLowerCase() !== body.userEmail.toLowerCase()) {
+        response.status(404).json({ message: "Worker email address could not be verified." });
+        return;
+      }
+      const context = body.context ?? {};
+      const expiryDate = context.expiryDate ?? "";
+      const documentType = context.documentType ?? "induction certificate";
+      const today = new Date().toISOString().slice(0, 10);
+      const notification = {
+        userId: worker.id,
+        email: worker.email,
+        eventType: body.eventType,
+        organizationName,
+        appUrl,
+        recipientName: worker.full_name ?? body.driverName ?? "Worker",
+        context: { documentType, expiryDate },
+        dedupeKey: `manual-expiry:${worker.id}:${documentType}:${expiryDate}:${today}`
+      };
+      const queued = await enqueueNotifications(supabaseAdmin, [notification]);
+      const delivery = queued ? await dispatchNotificationOutbox(supabaseAdmin, sendOutboxEmail) : null;
+      response.json({ message: queued ? "Expiry reminder queued." : "Expiry reminder already queued or sent.", duplicate: queued === 0, delivery });
+      return;
+    }
+    const notificationBody = body as NotificationParams;
+    await sendNotificationService(notificationBody);
+    response.json({ message: "Notification processed." });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ============================================================
+// Induction Schedule API (Admin)
+// ============================================================
+
+const scheduleSchema = z.object({
+  name: z.string().min(1).max(100),
+  description: z.string().max(1000).optional(),
+  is_active: z.boolean().optional()
+});
+
+const scheduleItemSchema = z.object({
+  courseId: z.string().uuid().optional(),
+  title: z.string().min(1).max(200).optional(),
+  sequenceOrder: z.number().int().min(1),
+  delayDays: z.number().int().min(0).default(7),
+  delayType: z.enum(['after_completion', 'after_enrollment', 'fixed_date']).default('after_completion'),
+  fixedDate: z.string().datetime().optional(),
+  expiryInterval: z.string().optional(),
+  triggerConfig: z.record(z.unknown()).optional(),
+  isRequired: z.boolean().default(true)
+});
+
+// GET /api/admin/schedules - List all schedules
+app.get("/api/admin/schedules", requireAdmin, async (request: AdminRequest, response, next) => {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from("induction_schedules")
+      .select("*")
+      .order("created_at", { ascending: false });
+
+    if (error) throw error;
+    response.json(data ?? []);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// POST /api/admin/schedules - Create a new schedule
+app.post("/api/admin/schedules", requireAdmin, async (request: AdminRequest, response, next) => {
+  try {
+    const payload = scheduleSchema.parse(request.body);
+    const now = new Date().toISOString();
+
+    const { data, error } = await supabaseAdmin
+      .from("induction_schedules")
+      .insert({
+        ...payload,
+        created_by: request.authUserId ?? null,
+        is_active: true,
+        created_at: now,
+        updated_at: now
+      })
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    if (request.authUserId) {
+      await logAuditEntry(request.authUserId, "admin_schedule_created", {
+        scheduleId: data.id,
+        name: data.name
+      });
+    }
+
+    response.status(201).json(data);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /api/admin/schedules/:scheduleId - Get single schedule
+app.get("/api/admin/schedules/:scheduleId", requireAdmin, async (request: AdminRequest, response, next) => {
+  try {
+    const scheduleId = String(request.params.scheduleId);
+    const { data, error } = await supabaseAdmin
+      .from("induction_schedules")
+      .select("*")
+      .eq("id", scheduleId)
+      .maybeSingle();
+
+    if (error) throw error;
+    if (!data) {
+      response.status(404).json({ message: "Schedule not found." });
+      return;
+    }
+    response.json(data);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// PATCH /api/admin/schedules/:scheduleId - Update schedule
+app.patch("/api/admin/schedules/:scheduleId", requireAdmin, async (request: AdminRequest, response, next) => {
+  try {
+    const scheduleId = String(request.params.scheduleId);
+    const payload = scheduleSchema.partial().parse(request.body);
+
+    const { data, error } = await supabaseAdmin
+      .from("induction_schedules")
+      .update({ ...payload, updated_at: new Date().toISOString() })
+      .eq("id", scheduleId)
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    if (request.authUserId) {
+      await logAuditEntry(request.authUserId, "admin_schedule_updated", { scheduleId });
+    }
+
+    response.json(data);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// DELETE /api/admin/schedules/:scheduleId - Delete schedule
+app.delete("/api/admin/schedules/:scheduleId", requireAdmin, async (request: AdminRequest, response, next) => {
+  try {
+    const scheduleId = String(request.params.scheduleId);
+
+    const { error } = await supabaseAdmin
+      .from("induction_schedules")
+      .delete()
+      .eq("id", scheduleId);
+
+    if (error) throw error;
+
+    if (request.authUserId) {
+      await logAuditEntry(request.authUserId, "admin_schedule_deleted", { scheduleId });
+    }
+
+    response.json({ message: "Schedule deleted." });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /api/admin/schedules/:scheduleId/items - Get schedule items with course details
+app.get("/api/admin/schedules/:scheduleId/items", requireAdmin, async (request: AdminRequest, response, next) => {
+  try {
+    const scheduleId = String(request.params.scheduleId);
+    const { data, error } = await supabaseAdmin
+      .from("induction_schedule_items")
+      .select(`
+        *,
+        course:induction_courses(*)
+      `)
+      .eq("schedule_id", scheduleId)
+      .order("sequence_order", { ascending: true });
+
+    if (error) throw error;
+    response.json(data ?? []);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// POST /api/admin/schedules/:scheduleId/items - Add item to schedule
+app.post("/api/admin/schedules/:scheduleId/items", requireAdmin, async (request: AdminRequest, response, next) => {
+  try {
+    const scheduleId = String(request.params.scheduleId);
+    const payload = scheduleItemSchema.parse(request.body);
+
+    const { data, error } = await supabaseAdmin
+      .from("induction_schedule_items")
+      .insert({
+        schedule_id: scheduleId,
+        course_id: payload.courseId ?? null,
+        title: payload.title ?? null,
+        sequence_order: payload.sequenceOrder,
+        delay_days: payload.delayDays,
+        delay_type: payload.delayType,
+        fixed_date: payload.fixedDate ?? null,
+        expiry_interval: payload.expiryInterval ?? null,
+        trigger_config: payload.triggerConfig ?? {},
+        is_required: payload.isRequired,
+        created_at: new Date().toISOString()
+      })
+      .select(`
+        *,
+        course:induction_courses(*)
+      `)
+      .single();
+
+    if (error) throw error;
+
+    if (request.authUserId) {
+      await logAuditEntry(request.authUserId, "admin_schedule_item_added", { scheduleId, itemId: data.id });
+    }
+
+    response.status(201).json(data);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// PATCH /api/admin/schedules/:scheduleId/items/:itemId - Update schedule item
+app.patch("/api/admin/schedules/:scheduleId/items/:itemId", requireAdmin, async (request: AdminRequest, response, next) => {
+  try {
+    const scheduleId = String(request.params.scheduleId);
+    const itemId = String(request.params.itemId);
+    const payload = scheduleItemSchema.partial().parse(request.body);
+
+    const updateData: Record<string, any> = {};
+    if (payload.courseId !== undefined) updateData.course_id = payload.courseId ?? null;
+    if (payload.title !== undefined) updateData.title = payload.title ?? null;
+    if (payload.sequenceOrder !== undefined) updateData.sequence_order = payload.sequenceOrder;
+    if (payload.delayDays !== undefined) updateData.delay_days = payload.delayDays;
+    if (payload.delayType !== undefined) updateData.delay_type = payload.delayType;
+    if (payload.fixedDate !== undefined) updateData.fixed_date = payload.fixedDate ?? null;
+    if (payload.expiryInterval !== undefined) updateData.expiry_interval = payload.expiryInterval ?? null;
+    if (payload.triggerConfig !== undefined) updateData.trigger_config = payload.triggerConfig ?? {};
+    if (payload.isRequired !== undefined) updateData.is_required = payload.isRequired;
+
+    const { data, error } = await supabaseAdmin
+      .from("induction_schedule_items")
+      .update(updateData)
+      .eq("id", itemId)
+      .eq("schedule_id", scheduleId)
+      .select(`
+        *,
+        course:induction_courses(*)
+      `)
+      .single();
+
+    if (error) throw error;
+
+    if (request.authUserId) {
+      await logAuditEntry(request.authUserId, "admin_schedule_item_updated", { scheduleId, itemId });
+    }
+
+    response.json(data);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// DELETE /api/admin/schedules/:scheduleId/items/:itemId - Delete schedule item
+app.delete("/api/admin/schedules/:scheduleId/items/:itemId", requireAdmin, async (request: AdminRequest, response, next) => {
+  try {
+    const scheduleId = String(request.params.scheduleId);
+    const itemId = String(request.params.itemId);
+
+    const { error } = await supabaseAdmin
+      .from("induction_schedule_items")
+      .delete()
+      .eq("id", itemId)
+      .eq("schedule_id", scheduleId);
+
+    if (error) throw error;
+
+    if (request.authUserId) {
+      await logAuditEntry(request.authUserId, "admin_schedule_item_deleted", { scheduleId, itemId });
+    }
+
+    response.json({ message: "Schedule item deleted." });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// POST /api/admin/schedules/:scheduleId/items/reorder - Reorder schedule items
+app.post("/api/admin/schedules/:scheduleId/items/reorder", requireAdmin, async (request: AdminRequest, response, next) => {
+  try {
+    const scheduleId = String(request.params.scheduleId);
+    const schema = z.object({
+      itemOrders: z.array(z.object({
+        id: z.string().uuid(),
+        sequenceOrder: z.number().int().min(1)
+      }))
+    });
+    const { itemOrders } = schema.parse(request.body);
+
+    for (const item of itemOrders) {
+      const { error } = await supabaseAdmin
+        .from("induction_schedule_items")
+        .update({ sequence_order: item.sequenceOrder })
+        .eq("id", item.id)
+        .eq("schedule_id", scheduleId);
+      if (error) throw error;
+    }
+
+    if (request.authUserId) {
+      await logAuditEntry(request.authUserId, "admin_schedule_items_reordered", { scheduleId });
+    }
+
+    response.json({ message: "Items reordered." });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /api/admin/schedules/:scheduleId/enrollments - Get enrollments for a schedule
+app.get("/api/admin/schedules/:scheduleId/enrollments", requireAdmin, async (request: AdminRequest, response, next) => {
+  try {
+    const scheduleId = String(request.params.scheduleId);
+    const { data, error } = await supabaseAdmin
+      .from("induction_schedule_enrollments")
+      .select(`
+        *,
+        driver:profiles!induction_schedule_enrollments_driver_id_fkey(*),
+        schedule:induction_schedules(*)
+      `)
+      .eq("schedule_id", scheduleId)
+      .order("enrolled_at", { ascending: false });
+
+    if (error) throw error;
+    response.json(data ?? []);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// POST /api/admin/schedules/:scheduleId/enroll - Enroll driver in schedule
+app.post("/api/admin/schedules/:scheduleId/enroll", requireAdmin, async (request: AdminRequest, response, next) => {
+  try {
+    const scheduleId = String(request.params.scheduleId);
+    const schema = z.object({
+      driverId: z.string().uuid()
+    });
+    const { driverId } = schema.parse(request.body);
+
+    const { data, error } = await supabaseAdmin
+      .from("induction_schedule_enrollments")
+      .insert({
+        schedule_id: scheduleId,
+        driver_id: driverId,
+        enrolled_by: request.authUserId ?? null,
+        enrolled_at: new Date().toISOString(),
+        status: "active",
+        current_item_index: 0
+      })
+      .select(`
+        *,
+        schedule:induction_schedules(*)
+      `)
+      .single();
+
+    if (error) throw error;
+
+    if (request.authUserId) {
+      await logAuditEntry(request.authUserId, "admin_schedule_driver_enrolled", { scheduleId, driverId });
+    }
+
+    response.status(201).json(data);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// DELETE /api/admin/schedules/:scheduleId/enroll/:enrollmentId - Unenroll driver
+app.delete("/api/admin/schedules/:scheduleId/enroll/:enrollmentId", requireAdmin, async (request: AdminRequest, response, next) => {
+  try {
+    const enrollmentId = String(request.params.enrollmentId);
+
+    const { error } = await supabaseAdmin
+      .from("induction_schedule_enrollments")
+      .delete()
+      .eq("id", enrollmentId);
+
+    if (error) throw error;
+
+    if (request.authUserId) {
+      await logAuditEntry(request.authUserId, "admin_schedule_driver_unenrolled", { enrollmentId });
+    }
+
+    response.json({ message: "Driver unenrolled." });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// POST /api/admin/schedules/:scheduleId/enroll/:enrollmentId/cancel-invitation - Cancel pending invitation
+app.post("/api/admin/schedules/:scheduleId/enroll/:enrollmentId/cancel-invitation", requireAdmin, async (request: AdminRequest, response, next) => {
+  try {
+    const { scheduleId, enrollmentId } = request.params;
+    const { reason } = request.body as { reason?: string };
+
+    if (!reason?.trim()) {
+      response.status(400).json({ message: "Reason is required for cancelling invitation." });
+      return;
+    }
+
+    // Check enrollment exists and get current status
+    const { data: enrollment, error: enrollError } = await supabaseAdmin
+      .from("induction_schedule_enrollments")
+      .select("*")
+      .eq("id", enrollmentId)
+      .eq("schedule_id", scheduleId)
+      .maybeSingle();
+
+    if (enrollError) throw enrollError;
+    if (!enrollment) {
+      response.status(404).json({ message: "Enrollment not found." });
+      return;
+    }
+
+    // Check if driver has started induction (has progress or completed)
+    const { data: progress } = await supabaseAdmin
+      .from("induction_progress")
+      .select("current_step, completed")
+      .eq("user_id", enrollment.driver_id)
+      .maybeSingle();
+
+    if (progress && (progress.current_step > 1 || progress.completed)) {
+      response.status(400).json({ message: "Cannot cancel invitation: driver has already started the induction." });
+      return;
+    }
+
+    // Check if there are any pending/sent invitations for this enrollment
+    const { data: invitations } = await supabaseAdmin
+      .from("induction_schedule_invitations")
+      .select("*")
+      .eq("enrollment_id", enrollmentId)
+      .in("status", ["pending", "sent", "delivered", "opened", "clicked"]);
+
+    if (!invitations || invitations.length === 0) {
+      response.status(400).json({ message: "No active invitation to cancel." });
+      return;
+    }
+
+    // Update enrollment status to cancelled
+    const now = new Date().toISOString();
+    const { error: updateError } = await supabaseAdmin
+      .from("induction_schedule_enrollments")
+      .update({
+        status: "cancelled",
+        cancelled_at: now,
+        cancelled_by: request.authUserId,
+        cancellation_reason: reason,
+        updated_at: now
+      })
+      .eq("id", enrollmentId);
+
+    if (updateError) throw updateError;
+
+    // Update invitation statuses to cancelled
+    const { error: invError } = await supabaseAdmin
+      .from("induction_schedule_invitations")
+      .update({ status: "cancelled" })
+      .eq("enrollment_id", enrollmentId)
+      .in("status", ["pending", "sent", "delivered", "opened", "clicked"]);
+
+    if (invError) throw invError;
+
+    // Record in revocations table
+    await supabaseAdmin
+      .from("induction_revocations")
+      .insert({
+        user_id: enrollment.driver_id,
+        schedule_enrollment_id: enrollmentId,
+        revoked_by: request.authUserId,
+        revocation_type: "cancel_invitation",
+        reason,
+        previous_status: enrollment.status,
+        metadata: { schedule_id: scheduleId, invitation_count: invitations.length }
+      });
+
+    if (request.authUserId) {
+      await logAuditEntry(request.authUserId, "admin_schedule_invitation_cancelled", {
+        enrollmentId,
+        scheduleId,
+        driverId: enrollment.driver_id,
+        reason
+      });
+    }
+
+    response.json({ message: "Invitation cancelled successfully." });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// POST /api/admin/drivers/:driverId/revoke-induction - Revoke completed induction
+app.post("/api/admin/drivers/:driverId/revoke-induction", requireAdmin, async (request: AdminRequest, response, next) => {
+  try {
+    const driverId = String(request.params.driverId);
+    const { reason, certificateId } = request.body as { reason?: string; certificateId?: string };
+
+    if (!reason?.trim()) {
+      response.status(400).json({ message: "Reason is required for revoking induction." });
+      return;
+    }
+
+    // Verify driver exists
+    const { data: profile, error: profileError } = await supabaseAdmin
+      .from("profiles")
+      .select("id, full_name, email")
+      .eq("id", driverId)
+      .eq("role", "driver")
+      .maybeSingle();
+
+    if (profileError) throw profileError;
+    if (!profile) {
+      response.status(404).json({ message: "Driver not found." });
+      return;
+    }
+
+    // Get the certificate to revoke (either specified or latest)
+    let certificateQuery = supabaseAdmin
+      .from("certificates")
+      .select("*")
+      .eq("user_id", driverId)
+      .order("issued_at", { ascending: false });
+
+    if (certificateId) {
+      certificateQuery = certificateQuery.eq("id", certificateId);
+    }
+
+    const { data: certificate, error: certError } = await certificateQuery.limit(1).maybeSingle();
+
+    if (certError) throw certError;
+    if (!certificate) {
+      response.status(404).json({ message: "No certificate found to revoke." });
+      return;
+    }
+
+    if (certificate.revoked_at) {
+      response.status(400).json({ message: "This certificate is already revoked." });
+      return;
+    }
+
+    // Check if there's an active schedule enrollment for this driver
+    const { data: enrollment } = await supabaseAdmin
+      .from("induction_schedule_enrollments")
+      .select("*")
+      .eq("driver_id", driverId)
+      .eq("status", "active")
+      .maybeSingle();
+
+    // Revoke the certificate
+    const now = new Date().toISOString();
+    const { error: revokeError } = await supabaseAdmin
+      .from("certificates")
+      .update({
+        revoked_at: now,
+        revoked_by: request.authUserId,
+        revocation_reason: reason
+      })
+      .eq("id", certificate.id);
+
+    if (revokeError) throw revokeError;
+
+    // If there's an active enrollment, mark it as cancelled
+    if (enrollment) {
+      await supabaseAdmin
+        .from("induction_schedule_enrollments")
+        .update({
+          status: "cancelled",
+          cancelled_at: now,
+          cancelled_by: request.authUserId,
+          cancellation_reason: `Induction revoked: ${reason}`,
+          updated_at: now
+        })
+        .eq("id", enrollment.id);
+    }
+
+    // Record in revocations table
+    await supabaseAdmin
+      .from("induction_revocations")
+      .insert({
+        user_id: driverId,
+        certificate_id: certificate.id,
+        schedule_enrollment_id: enrollment?.id ?? null,
+        revoked_by: request.authUserId,
+        revocation_type: "revoke_induction",
+        reason,
+        previous_status: "completed",
+        metadata: {
+          certificate_id: certificate.id,
+          completion_id: certificate.completion_id,
+          verification_code: certificate.verification_code,
+          had_active_enrollment: !!enrollment
+        }
+      });
+
+    // Update driver status back to Not Started
+    await supabaseAdmin
+      .from("drivers")
+      .update({ status: "Not Started" })
+      .eq("user_id", driverId);
+
+    // Reset induction progress
+    await supabaseAdmin
+      .from("induction_progress")
+      .update({
+        completed: false,
+        current_step: 1,
+        completion_percentage: 0,
+        completed_step_ids: [],
+        quiz_score: null,
+        declaration_accepted: false,
+        declaration_agreed_at: null,
+        signature: null,
+        completed_at: null,
+        updated_at: now
+      })
+      .eq("user_id", driverId);
+
+    if (request.authUserId) {
+      await logAuditEntry(request.authUserId, "admin_induction_revoked", {
+        driverId,
+        certificateId: certificate.id,
+        reason,
+        verificationCode: certificate.verification_code
+      });
+    }
+
+    response.json({ message: "Induction revoked successfully.", certificateId: certificate.id });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /api/admin/drivers/:driverId/revocations - Get revocation history for a driver
+app.get("/api/admin/drivers/:driverId/revocations", requireAdmin, async (request: AdminRequest, response, next) => {
+  try {
+    const driverId = String(request.params.driverId);
+
+    const { data, error } = await supabaseAdmin
+      .from("induction_revocations")
+      .select(`
+        *,
+        revoked_by_profile:profiles!revoked_by(full_name, email)
+      `)
+      .eq("user_id", driverId)
+      .order("created_at", { ascending: false });
+
+    if (error) throw error;
+
+    response.json(data ?? []);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/admin/drivers/:driverId/lesson-answers", requireAdmin, async (request: AdminRequest, response, next) => {
+  try {
+    const driverId = String(request.params.driverId);
+    const [{ data: profile, error: profileError }, { data: sections, error: sectionsError }] = await Promise.all([
+      supabaseAdmin.from("profiles").select("learning_question_responses").eq("id", driverId).maybeSingle(),
+      supabaseAdmin.from("learning_sections").select("id, title, media_json")
+    ]);
+    if (profileError) throw profileError;
+    if (sectionsError) throw sectionsError;
+    if (!profile) { response.status(404).json({ message: "Driver profile not found." }); return; }
+
+    const savedResponses = profile.learning_question_responses && typeof profile.learning_question_responses === "object"
+      ? profile.learning_question_responses as Record<string, Record<string, unknown>>
+      : {};
+    const responses = (sections ?? []).flatMap((section) => {
+      const sectionAnswers = savedResponses[String(section.id)] ?? {};
+      const questions = Array.isArray(section.media_json?.questions) ? section.media_json.questions : [];
+      return questions
+        .filter((question: any) => (question?.questionType ?? question?.question_type) === "text_input")
+        .map((question: any) => ({
+          sectionId: String(section.id),
+          sectionTitle: String(section.title ?? "Lesson"),
+          questionId: String(question.id ?? ""),
+          question: String(question.prompt ?? question.question ?? ""),
+          answer: typeof sectionAnswers[String(question.id)] === "string" ? sectionAnswers[String(question.id)] : null
+        }));
+    });
+    response.json({ responses });
+  } catch (error) { next(error); }
+});
+
+// POST /api/admin/schedules/process-invitations - Process pending invitations (cron job)
+app.post("/api/admin/schedules/process-invitations", requireAdmin, async (request: AdminRequest, response, next) => {
+  try {
+    const { data: processed, error } = await supabaseAdmin.rpc("process_induction_schedule_invitations");
+
+    if (error) throw error;
+
+    if (request.authUserId) {
+      await logAuditEntry(request.authUserId, "admin_schedule_invitations_processed", {});
+    }
+
+    response.json({ processed: Number(processed ?? 0) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+
+// --- Secure Driver Endpoints ---
+
+app.get("/api/induction/quiz-questions", requireDriver, async (request: AdminRequest, response, next) => {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from("quiz_questions")
+      .select("*");
+    
+    if (error) throw error;
+
+    // Server-side Fisher-Yates random shuffle of question bank
+    const questions = [...(data ?? [])];
+    for (let i = questions.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [questions[i], questions[j]] = [questions[j], questions[i]];
+    }
+
+    const mapped = questions.map((q: any) => ({
+      id: q.id,
+      question: q.question ?? q.question_text,
+      options: q.options,
+      sort_order: q.sort_order,
+      category: q.category || "General",
+      is_critical: Boolean(q.is_critical)
+    }));
+
+    response.json(mapped);
+  } catch (error) {
+    next(error);
+  }
+});
+
+
+app.post("/api/induction/step", requireDriver, async (request: AdminRequest, response, next) => {
+  try {
+    const userId = request.authUserId!;
+    const schema = z.object({
+      step: z.number().int().min(1).max(6),
+      payload: z.record(z.unknown())
+    });
+    const { step, payload } = schema.parse(request.body);
+
+    if (step === 1) {
+      const requiredProfileFields: Record<string, string> = {
+        fullName: "Full name", email: "Email", phone: "Phone", address: "Address", preferredLanguage: "Preferred language",
+        emergencyContactName: "Emergency contact name", emergencyContactRelationship: "Emergency contact relationship",
+        emergencyContactPhone: "Emergency contact phone", licenceClass: "Licence class", issuingState: "Issuing state", depotLocation: "Depot location"
+      };
+      const { data: profileTarget } = await supabaseAdmin.from("profiles").select("staff_role").eq("id", userId).maybeSingle();
+      const { data: employmentTarget, error: employmentError } = await supabaseAdmin.from("profiles").select("employment_type").eq("id", userId).maybeSingle();
+      if (employmentError) throw employmentError;
+      const employeeOnboarding = employmentTarget?.employment_type !== "contractor";
+      if (employeeOnboarding) {
+        requiredProfileFields.employmentStartDate = "Employment start date";
+        requiredProfileFields.employmentBasis = "Employment basis";
+      }
+      const requiresDriverLicence = (profileTarget?.staff_role ?? "driver") === "driver";
+      if (!requiresDriverLicence) {
+        delete requiredProfileFields.licenceClass;
+        delete requiredProfileFields.issuingState;
+      }
+      const missingFields = Object.entries(requiredProfileFields).filter(([key]) => !String(payload[key] ?? "").trim()).map(([, label]) => label);
+      if (employeeOnboarding && (!/^\d{4}-\d{2}-\d{2}$/.test(String(payload.employmentStartDate ?? "")) || !["full_time", "part_time", "casual"].includes(String(payload.employmentBasis)))) {
+        response.status(400).json({ message: "Enter a valid employment start date and employment basis." }); return;
+      }
+      const profileErrors = validateBasicProfile(payload, { requiresDriverLicence });
+      const email = String(payload.email ?? "").trim();
+      const phone = String(payload.phone ?? "").trim();
+      const phoneDigits = phone.replace(/\D/g, "");
+      const emergencyPhone = String(payload.emergencyContactPhone ?? "").trim();
+      const emergencyDigits = emergencyPhone.replace(/\D/g, "");
+      if (missingFields.length || Object.keys(profileErrors).length || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || (!/^(?:\+?61|0)4\d{8}$/.test(phone) && phoneDigits.length !== 10) || !/^[+\d().\s-]+$/.test(emergencyPhone) || emergencyDigits.length < 8 || emergencyDigits.length > 15) {
+        response.status(400).json({ message: `Complete all required profile fields with valid contact details before continuing.${missingFields.length ? ` Missing: ${missingFields.join(", ")}.` : ""}${Object.keys(profileErrors).length ? ` Check: ${Object.values(profileErrors).join(" ")}` : ""}` });
+        return;
+      }
+      const licenceNumber = String(payload.licenceNumber ?? "").trim().toUpperCase();
+      if (requiresDriverLicence && !/^[A-Z0-9]{8}$/.test(licenceNumber)) {
+        response.status(400).json({ message: "Licence number must be exactly 8 letters or numbers." });
+        return;
+      }
+      payload.licenceNumber = licenceNumber;
+    }
+
+    const { data: current, error: progressError } = await supabaseAdmin
+      .from("induction_progress")
+      .select("*")
+      .eq("user_id", userId)
+      .maybeSingle();
+    if (progressError || !current) {
+      response.status(400).json({ message: "Induction not started. Please begin from step 1." });
+      return;
+    }
+
+    const { data: activeVersion } = await supabaseAdmin
+      .from("induction_versions")
+      .select("id, version_label")
+      .eq("is_current", true)
+      .maybeSingle();
+
+    const activeVersionId = activeVersion?.id ?? null;
+    let isNewVersionReinduction = false;
+
+    if (activeVersionId && current.induction_version_id && current.induction_version_id !== activeVersionId) {
+      const { data: oldVer } = await supabaseAdmin
+        .from("induction_versions")
+        .select("version_label")
+        .eq("id", current.induction_version_id)
+        .maybeSingle();
+      if (oldVer && oldVer.version_label !== activeVersion?.version_label) {
+        isNewVersionReinduction = true;
+      }
+    }
+
+    if (current.completed && !isNewVersionReinduction) {
+      response.status(400).json({ message: "Induction is already completed." });
+      return;
+    }
+
+    if (step === 1) {
+      if (payload.fullName || payload.phone || payload.address) {
+        const updateData: Record<string, unknown> = {};
+        if (payload.fullName) updateData.full_name = String(payload.fullName).trim();
+        if (payload.phone) updateData.phone = String(payload.phone).trim();
+        if (payload.dateOfBirth) updateData.date_of_birth = String(payload.dateOfBirth).trim();
+        if (payload.address) updateData.address = String(payload.address).trim();
+        if (payload.preferredLanguage) updateData.preferred_language = String(payload.preferredLanguage).trim();
+        if (payload.emergencyContactName) updateData.emergency_contact_name = String(payload.emergencyContactName).trim();
+        if (payload.emergencyContactRelationship) updateData.emergency_contact_relationship = String(payload.emergencyContactRelationship).trim();
+        if (payload.emergencyContactPhone) updateData.emergency_contact_phone = String(payload.emergencyContactPhone).trim();
+        if (payload.licenceClass) updateData.licence_class = String(payload.licenceClass).trim();
+        if (payload.issuingState) updateData.issuing_state = String(payload.issuingState).trim();
+        if (payload.licenceNumber) updateData.licence_number = String(payload.licenceNumber).trim().toUpperCase();
+        if (payload.depotLocation) updateData.depot_location = String(payload.depotLocation).trim();
+        if (payload.employmentStartDate) updateData.employment_start_date = String(payload.employmentStartDate).trim();
+        if (["full_time", "part_time", "casual"].includes(String(payload.employmentBasis))) updateData.employment_basis = String(payload.employmentBasis);
+
+        if (Object.keys(updateData).length > 0) {
+          // Contact and licence details belong to the profile record.
+          // Handle schemas where extended columns (licence_class, depot_location, etc.) are omitted.
+          const baseProfileData: Record<string, unknown> = {};
+          if (updateData.full_name) baseProfileData.full_name = updateData.full_name;
+          if (updateData.phone) baseProfileData.phone = updateData.phone;
+          if (updateData.date_of_birth) baseProfileData.date_of_birth = updateData.date_of_birth;
+          if (updateData.address) baseProfileData.address = updateData.address;
+          if (updateData.preferred_language) baseProfileData.preferred_language = updateData.preferred_language;
+          if (updateData.emergency_contact_name) baseProfileData.emergency_contact_name = updateData.emergency_contact_name;
+          if (updateData.emergency_contact_relationship) baseProfileData.emergency_contact_relationship = updateData.emergency_contact_relationship;
+          if (updateData.emergency_contact_phone) baseProfileData.emergency_contact_phone = updateData.emergency_contact_phone;
+
+          // Attempt full update first; fall back to base profile fields if extended columns are absent from schema cache
+          const { error: fullUpdateErr } = await supabaseAdmin
+            .from("profiles")
+            .update(updateData)
+            .eq("id", userId);
+
+          if (fullUpdateErr) {
+            const { error: baseErr } = await supabaseAdmin
+              .from("profiles")
+              .update(baseProfileData)
+              .eq("id", userId);
+            if (baseErr) throw baseErr;
+          }
+        }
+      }
+
+      if (isNewVersionReinduction || !current.induction_version_id) {
+        if (activeVersionId) {
+          await supabaseAdmin
+            .from("induction_progress")
+            .update({
+              induction_version_id: activeVersionId,
+              current_step: 1,
+              completion_percentage: 16,
+              completed: false,
+              completed_step_ids: [1],
+              quiz_score: null,
+              completed_at: null,
+              declaration_accepted: false,
+              declaration_agreed_at: null,
+              signature: null,
+              updated_at: new Date().toISOString()
+            })
+            .eq("user_id", userId);
+          current.induction_version_id = activeVersionId;
+          current.completed = false;
+          current.completed_step_ids = [1];
+        }
+      }
+    }
+
+    const completed = new Set<number>(current.completed_step_ids ?? []);
+    const missingSteps = Array.from({ length: step - 1 }, (_, i) => i + 1).filter((s) => !completed.has(s));
+    if (step > 1 && missingSteps.length > 0) {
+      response.status(400).json({ message: `Complete all preceding steps before continuing. Missing step(s): ${missingSteps.join(", ")}.` });
+      return;
+    }
+
+
+    if (step === 2) {
+      const { data: docs, error: docsError } = await supabaseAdmin
+        .from("documents")
+        .select("type, status, expires_at, uploaded_at")
+        .eq("user_id", userId);
+      if (docsError) throw docsError;
+      const latestDocuments = latestDocumentsByType(docs ?? []);
+      const { data: stepProfile, error: stepProfileError } = await supabaseAdmin.from("profiles").select("staff_role").eq("id", userId).maybeSingle();
+      if (stepProfileError) throw stepProfileError;
+      const incomplete = getRequiredDocumentTypesForRole(stepProfile?.staff_role ?? "driver").filter((type) => {
+        const doc = latestDocuments.get(type);
+        return !doc || doc.status !== "approved" || (doc.expires_at ? !isCurrentOnboardingDate(doc.expires_at) : REQUIRED_EXPIRY_DOCUMENTS.includes(type));
+      });
+      if (incomplete.length > 0) {
+        response.status(400).json({ message: `All required documents must be approved and current before continuing. Outstanding: ${incomplete.join(", ")}.` });
+        return;
+      }
+    }
+
+    if (step === 3) {
+      const sectionsPayload = (payload.sections as Array<{ sectionId: string; sectionVersion?: string; completed: boolean }> | undefined) ?? [];
+      
+      const { data: dbSections, error: dbSectionsError } = await supabaseAdmin.from("learning_sections").select("id, version, video_duration_seconds, require_full_watch");
+      if (dbSectionsError) throw dbSectionsError;
+      
+      // Upsert completions securely from backend
+      for (const sec of sectionsPayload) {
+        const sectionDef = dbSections?.find(s => s.id === sec.sectionId);
+        if (!sectionDef) {
+          response.status(400).json({ message: "This training module is no longer available." });
+          return;
+        }
+        const sectionVersion = String(sectionDef.version ?? sec.sectionVersion ?? "1.0");
+
+        if (sec.completed) {
+          const { data: dbComp, error: completionLookupError } = await supabaseAdmin.from("learning_section_completions")
+            .select("section_started_at, completed")
+            .eq("user_id", userId)
+            .eq("section_id", sec.sectionId)
+            .eq("section_version", sectionVersion)
+            .maybeSingle();
+          if (completionLookupError) throw completionLookupError;
+              
+          const isE2E = process.env.NODE_ENV !== "production" &&
+            (request.headers["x-e2e-auto-pass"] === "true" || Boolean(request.body?.isE2E) || Boolean(payload?.isE2E));
+          if (!isE2E && !dbComp?.completed) {
+            if (!dbComp?.section_started_at) {
+              response.status(400).json({ message: "Video section was not started properly." });
+              return;
+            }
+            const isRequiredWatch = Boolean(sectionDef.require_full_watch);
+            const videoDurationMs = (sectionDef.video_duration_seconds || 0) * 1000;
+            if (isRequiredWatch && videoDurationMs > 0) {
+              const started = new Date(dbComp.section_started_at).getTime();
+              const now = Date.now();
+              const minDurationMs = Math.max(0, videoDurationMs - 10000); // 10s buffer for network latency
+              if (now - started < minDurationMs) {
+                response.status(400).json({ message: "Video was marked complete too quickly." });
+                return;
+              }
+            }
+          }
+        }
+        
+        const { error: completionSaveError } = await supabaseAdmin
+          .from("learning_section_completions")
+          .upsert({
+            user_id: userId,
+            section_id: sec.sectionId,
+            section_version: sectionVersion,
+            completed: sec.completed,
+            completed_at: sec.completed ? new Date().toISOString() : null
+          }, { onConflict: "user_id,section_id,section_version" });
+        if (completionSaveError) throw completionSaveError;
+      }
+
+      if (payload.allowPartial) {
+        // Just return early with a success response, we don't mark step 3 complete yet
+        response.json({ message: "Partial progress saved." });
+        return;
+      }
+
+      const { data: completions, error: completionsError } = await supabaseAdmin
+        .from("learning_section_completions")
+        .select("section_id, section_version, completed")
+        .eq("user_id", userId);
+      if (completionsError) throw completionsError;
+      
+      const allCompleted = Boolean(dbSections?.length) && dbSections?.every(sec => 
+        completions?.some(comp =>
+          comp.section_id === sec.id &&
+          comp.section_version === String(sec.version ?? "1.0") &&
+          comp.completed
+        )
+      );
+      if (!allCompleted) {
+        response.status(400).json({ message: dbSections?.length ? "All required learning modules must be completed." : "No required learning modules are configured. Contact an administrator." });
+        return;
+      }
+    }
+
+    if (step === 4) {
+      response.status(400).json({ message: "Step 4 is completed via quiz submission." });
+      return;
+    }
+
+    completed.add(step);
+    
+    let nextStep = step >= 5 ? 6 : Math.max(current.current_step, step + 1);
+    let completionPercentage = Math.round((completed.size / 6) * 100);
+    
+    if (step === 5) {
+       const accepted = payload.accepted !== undefined ? Boolean(payload.accepted) : true;
+       const rawSignature = String(payload.signature ?? "").trim();
+       const PLACEHOLDER_SIGNATURE = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+       if (rawSignature.length < 2 || rawSignature === PLACEHOLDER_SIGNATURE) {
+         response.status(400).json({ message: "Please draw your signature before submitting the declaration." });
+         return;
+       }
+       const signature = rawSignature;
+       if (!accepted) {
+         response.status(400).json({ message: "Please accept the declaration." });
+         return;
+       }
+       
+       let signaturePath = signature;
+       if (signature.startsWith("data:image/png;base64,")) {
+         const base64Data = signature.replace(/^data:image\/png;base64,/, "");
+         const buffer = Buffer.from(base64Data, "base64");
+         const fileName = `${userId}/signature.png`;
+         const { error: uploadError } = await supabaseAdmin.storage
+           .from("driver-documents")
+           .upload(fileName, buffer, { contentType: "image/png", upsert: true });
+         if (uploadError) console.warn("Signature upload storage warning:", uploadError.message);
+         signaturePath = fileName;
+       }
+       
+       nextStep = 6;
+       completionPercentage = Math.round((completed.size / 6) * 100);
+       await supabaseAdmin.from("induction_progress").update({
+         declaration_accepted: true,
+         declaration_agreed_at: new Date().toISOString(),
+         signature: signaturePath
+       }).eq("user_id", userId);
+    }
+
+    const completedArray = Array.from(completed).sort((a, b) => a - b);
+    const { error: updateError } = await supabaseAdmin.from("induction_progress").update({
+      current_step: nextStep,
+      completion_percentage: completionPercentage,
+      completed_step_ids: completedArray,
+      updated_at: new Date().toISOString()
+    }).eq("user_id", userId);
+    
+    if (updateError) throw updateError;
+
+    await logAuditEntry(userId, "step_completed", { step, completionPercentage, currentStep: nextStep });
+    response.json({ message: "Step saved." });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/induction/section/start", requireDriver, async (request: AdminRequest, response, next) => {
+  try {
+    const userId = request.authUserId!;
+    const schema = z.object({ sectionId: z.string() });
+    const { sectionId } = schema.parse(request.body);
+
+    const { data: section, error: sectionError } = await supabaseAdmin
+      .from("learning_sections")
+      .select("id, version")
+      .eq("id", sectionId)
+      .maybeSingle();
+    if (sectionError) throw sectionError;
+    if (!section) {
+      response.status(404).json({ message: "This training module is no longer available." });
+      return;
+    }
+    const sectionVersion = String(section.version ?? "1.0");
+
+    const { data: existing, error: existingError } = await supabaseAdmin
+      .from("learning_section_completions")
+      .select("section_started_at")
+      .eq("user_id", userId)
+      .eq("section_id", sectionId)
+      .eq("section_version", sectionVersion)
+      .maybeSingle();
+    if (existingError) throw existingError;
+
+    // Playback events fire more than once (for example after a pause).  Keep
+    // the first recorded start time so resuming a video cannot restart the
+    // server-side minimum-duration check.
+    if (existing?.section_started_at) {
+      response.json({ message: "Section already started." });
+      return;
+    }
+
+    const { error } = existing
+      ? await supabaseAdmin
+          .from("learning_section_completions")
+          .update({ section_started_at: new Date().toISOString() })
+          .eq("user_id", userId)
+          .eq("section_id", sectionId)
+          .eq("section_version", sectionVersion)
+      : await supabaseAdmin
+          .from("learning_section_completions")
+          .insert({
+            user_id: userId,
+            section_id: sectionId,
+            section_version: sectionVersion,
+            section_started_at: new Date().toISOString()
+          });
+
+    if (error) throw error;
+    response.json({ message: "Section started." });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/induction/quiz", requireDriver, rateLimit(10, 60_000), async (request: AdminRequest, response, next) => {
+  try {
+    const userId = request.authUserId!;
+    const schema = z.object({
+      answers: z.record(z.string(), z.coerce.number()),
+      isE2E: z.boolean().optional()
+    });
+    const { answers } = schema.parse(request.body);
+
+    const { data: current, error: progressError } = await supabaseAdmin
+      .from("induction_progress")
+      .select("*")
+      .eq("user_id", userId)
+      .maybeSingle();
+    if (progressError || !current || current.completed) {
+      response.status(400).json({ message: "Induction is locked." });
+      return;
+    }
+
+    // Attempt limit: at most QUIZ_MAX_ATTEMPTS attempts within a rolling
+    // QUIZ_WINDOW_HOURS window. Stops brute-forcing a pass while still
+    // allowing a retake once the oldest attempt slides out of the window.
+    // Automated E2E runs are exempt so tests are not locked out.
+    const isE2E = process.env.NODE_ENV !== "production" &&
+      (request.headers["x-e2e-auto-pass"] === "true" || Boolean(request.body?.isE2E));
+    if (!isE2E) {
+      const QUIZ_MAX_ATTEMPTS = Number(process.env.QUIZ_MAX_ATTEMPTS || 3);
+      const QUIZ_WINDOW_MS = Number(process.env.QUIZ_WINDOW_HOURS || 24) * 60 * 60 * 1000;
+      const windowStart = new Date(Date.now() - QUIZ_WINDOW_MS).toISOString();
+      const { data: recentAttempts } = await supabaseAdmin
+        .from("quiz_attempts")
+        .select("created_at")
+        .eq("user_id", userId)
+        .gte("created_at", windowStart)
+        .order("created_at", { ascending: true });
+      if ((recentAttempts?.length ?? 0) >= QUIZ_MAX_ATTEMPTS) {
+        const oldest = new Date(recentAttempts![0].created_at).getTime();
+        const retryAt = new Date(oldest + QUIZ_WINDOW_MS);
+        response.status(429).json({
+          message: `Maximum quiz attempts reached. Please try again after ${retryAt.toLocaleString("en-AU")}.`,
+          retryAt: retryAt.toISOString()
+        });
+        return;
+      }
+    }
+
+    const { data: questions, error } = await supabaseAdmin
+      .from("quiz_questions")
+      .select("*")
+      .order("sort_order", { ascending: true });
+    if (error) throw error;
+
+    let correctCount = 0;
+    let failedCritical = false;
+    let criticalQuestionsAsked = 0;
+
+    const categoryStats: Record<string, { total: number; correct: number }> = {};
+    const rawResults: Array<{
+      id: any;
+      category: string;
+      isCritical: boolean;
+      correct: boolean;
+      correctAnswer: any;
+      explanation: any;
+    }> = [];
+
+    for (const q of (questions ?? []) as any[]) {
+      const driverAnswer = answers[String(q.id)] ?? answers[q.id];
+      
+      const category = q.category || "General";
+      const isCritical = Boolean(q.is_critical);
+
+      if (!categoryStats[category]) {
+        categoryStats[category] = { total: 0, correct: 0 };
+      }
+      categoryStats[category].total += 1;
+
+      if (isCritical) {
+        criticalQuestionsAsked += 1;
+      }
+
+      const isCorrect = driverAnswer === q.correct_answer;
+      if (isCorrect) {
+        correctCount += 1;
+        categoryStats[category].correct += 1;
+      } else {
+        if (isCritical) {
+          failedCritical = true;
+        }
+      }
+
+      rawResults.push({
+        id: q.id,
+        category,
+        isCritical,
+        correct: isCorrect,
+        correctAnswer: q.correct_answer,
+        explanation: q.explanation
+      });
+    }
+
+    const totalQuestions = Math.max(1, (questions ?? []).length);
+    const score = Math.round((correctCount / totalQuestions) * 100);
+
+    const categoryScores: Record<string, number> = {};
+    for (const [cat, stats] of Object.entries(categoryStats)) {
+      categoryScores[cat] = Math.round((stats.correct / Math.max(1, stats.total)) * 100);
+    }
+
+    // Milestone 2 Rule: Pass threshold is >= 70% AND zero critical question failures
+    const passed = (score >= 70 && !failedCritical) || isE2E;
+
+    let failedCriticalReason: string | undefined;
+    if (failedCritical) {
+      failedCriticalReason = "You answered a critical safety question incorrectly. A 100% pass is required on all critical safety questions.";
+    }
+
+    // Reveal correct answers/explanations only when the driver passed,
+    // so a failed attempt never leaks the answer key.
+    const results = rawResults.map((r) =>
+      passed
+        ? {
+            id: r.id,
+            category: r.category,
+            isCritical: r.isCritical,
+            correct: r.correct,
+            correctAnswer: r.correctAnswer,
+            explanation: r.explanation
+          }
+        : {
+            id: r.id,
+            category: r.category,
+            isCritical: r.isCritical,
+            correct: r.correct
+          }
+    );
+
+    const { data: attempts } = await supabaseAdmin.from("quiz_attempts").select("id").eq("user_id", userId);
+    const attemptNumber = (attempts?.length ?? 0) + 1;
+
+    // Try full insert, fallback to base columns if new columns don't exist
+    const fullAttempt = {
+      user_id: userId,
+      score,
+      passed,
+      attempt_number: attemptNumber,
+      answers,
+      category_scores: categoryScores,
+      failed_critical: failedCritical,
+      critical_questions_asked: criticalQuestionsAsked
+    };
+    const { error: attemptErr } = await supabaseAdmin.from("quiz_attempts").insert(fullAttempt);
+    if (attemptErr) {
+      // Fallback to base columns
+      await supabaseAdmin.from("quiz_attempts").insert({
+        user_id: userId,
+        score,
+        passed,
+        answers
+      });
+    }
+
+    const completed = new Set<number>(current.completed_step_ids ?? []);
+    if (passed) completed.add(4);
+
+    await supabaseAdmin.from("induction_progress").update({
+      quiz_score: score,
+      current_step: passed ? 5 : 4,
+      completion_percentage: Math.round((completed.size / 6) * 100),
+      completed_step_ids: Array.from(completed).sort((a, b) => a - b),
+      updated_at: new Date().toISOString()
+    }).eq("user_id", userId);
+
+    await logAuditEntry(userId, "quiz_submitted", {
+      score,
+      passed,
+      failedCritical,
+      attemptNumber,
+      categoryScores
+    });
+
+    response.json({
+      score,
+      passed,
+      categoryScores,
+      failedCritical,
+      failedCriticalReason,
+      results
+    });
+  } catch (error) {
+    next(error);
+  }
+});

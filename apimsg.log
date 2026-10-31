@@ -1,0 +1,12 @@
+
+> @induction/api@0.0.1 build
+> tsc
+
+src/app.ts(8646,33): error TS2339: Property 'subject' does not exist on type '{ id: any; receiver_id: any; sender_id: any; }'.
+npm error Lifecycle script `build` failed with error:
+npm error code 2
+npm error path C:\Users\Dell\Downloads\bnt-induction-main\bnt-induction-main\apps\api
+npm error workspace @induction/api@0.0.1
+npm error location C:\Users\Dell\Downloads\bnt-induction-main\bnt-induction-main\apps\api
+npm error command failed
+npm error command C:\WINDOWS\system32\cmd.exe /d /s /c tsc

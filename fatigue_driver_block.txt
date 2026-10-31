@@ -1,0 +1,23 @@
+app.get("/api/fatigue-awareness/questions", requireDriver, async (request: AdminRequest, response, next) => {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from("fatigue_awareness_questions")
+      .select("id, question, options, correct_answer, sort_order, category")
+      .eq("assessment_id", "fatigue_awareness")
+      .order("sort_order", { ascending: true })
+      .order("created_at", { ascending: true });
+    if (error) throw error;
+    try {
+      validateFatigueQuestions(data ?? []);
+    } catch (validationError) {
+      if (validationError instanceof FatigueAssessmentError && validationError.kind === "configuration") {
+        response.status(503).json({ message: validationError.message });
+        return;
+      }
+      throw validationError;
+    }
+    response.json((data ?? []).map(({ correct_answer: _correctAnswer, ...question }: any) => question));
+  } catch (error) {
+    next(error);
+  }
+});

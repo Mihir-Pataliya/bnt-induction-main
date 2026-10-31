@@ -1,0 +1,14 @@
+
+> @induction/web@0.0.1 build
+> tsc --noEmit && vite build
+
+src/components/driver/FatigueAwarenessDriver.tsx(83,6): error TS17008: JSX element 'div' has no corresponding closing tag.
+src/components/driver/FatigueAwarenessDriver.tsx(228,1): error TS1381: Unexpected token. Did you mean `{'}'}` or `&rbrace;`?
+src/components/driver/FatigueAwarenessDriver.tsx(228,2): error TS1005: '</' expected.
+npm error Lifecycle script `build` failed with error:
+npm error code 2
+npm error path C:\Users\Dell\Downloads\bnt-induction-main\bnt-induction-main\apps\web
+npm error workspace @induction/web@0.0.1
+npm error location C:\Users\Dell\Downloads\bnt-induction-main\bnt-induction-main\apps\web
+npm error command failed
+npm error command C:\WINDOWS\system32\cmd.exe /d /s /c tsc --noEmit && vite build

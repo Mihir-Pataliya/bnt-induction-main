@@ -1,0 +1,10 @@
+export const REQUIRED_ONBOARDING_DOCUMENTS: string[];
+export const REQUIRED_EXPIRY_DOCUMENTS: string[];
+export function getRequiredDocumentTypesForRole(staffRole?: string): string[];
+export function getNextContractorCompanyStatus(currentStatus: string, allCurrent: boolean): "Compliant" | "Pending Review" | "Suspended" | "Inactive";
+export function buildDocumentReviewUpdate(input: Record<string, any>): Record<string, any>;
+export function isCurrentOnboardingDate(value: unknown, now?: Date): boolean;
+export function latestDocumentsByType(rows?: Array<Record<string, any>>): Map<string, Record<string, any>>;
+export function getFinalApprovalBlockers(input: Record<string, any>, now?: Date): string[];
+export function getChecklistBlockers(input: Record<string, any>, now?: Date): string[];
+export function getCurrentWorkClearanceBlockers(supabase: any, userId: string, now?: Date): Promise<string[]>;

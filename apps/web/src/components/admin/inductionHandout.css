@@ -1,0 +1,45 @@
+@media print {
+  @page {
+    margin: 14mm;
+  }
+
+  body * {
+    visibility: hidden !important;
+  }
+
+  .induction-handout-print-root,
+  .induction-handout-print-root * {
+    visibility: visible !important;
+  }
+
+  .induction-handout-print-root {
+    position: absolute !important;
+    inset: 0 !important;
+    width: 100% !important;
+    padding: 0 !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    background: #fff !important;
+    color: #111827 !important;
+    box-shadow: none !important;
+  }
+
+  .induction-handout-print-root * {
+    border-color: #cbd5e1 !important;
+    color: #111827 !important;
+    background-color: transparent !important;
+    box-shadow: none !important;
+  }
+
+  .ih-noprint {
+    display: none !important;
+  }
+
+  .ih-collapsible-content {
+    display: block !important;
+  }
+
+  .ih-pending-section {
+    break-inside: avoid;
+  }
+}
