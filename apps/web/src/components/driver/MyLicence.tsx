@@ -187,6 +187,53 @@ export function MyLicence({ session, driverBundle, onRefresh }: MyLicenceProps) 
         </div>
       )}
 
+      {document ? (
+        <div className="rounded-xl border border-slate-700 bg-slate-900/60 p-4 space-y-3">
+          <div className="flex items-center gap-2">
+            <FileText className="h-4 w-4 text-emerald-300" />
+            <h4 className="text-sm font-bold text-white">Uploaded licence document</h4>
+          </div>
+          <div className="grid gap-3 md:grid-cols-2 text-sm">
+            <div>
+              <p className="text-xs font-bold uppercase tracking-wider text-slate-400">File name</p>
+              <p className="mt-1 text-white">{document.name || "Not provided"}</p>
+            </div>
+            <div>
+              <p className="text-xs font-bold uppercase tracking-wider text-slate-400">Uploaded</p>
+              <p className="mt-1 text-white">{document.uploadedAt ? new Date(document.uploadedAt).toLocaleDateString("en-AU") : "Not recorded"}</p>
+            </div>
+            <div>
+              <p className="text-xs font-bold uppercase tracking-wider text-slate-400">Verification status</p>
+              <p className="mt-1 text-white">{verification}</p>
+            </div>
+            <div>
+              <p className="text-xs font-bold uppercase tracking-wider text-slate-400">Expiry</p>
+              <p className="mt-1 text-white">{formatExpiry(document.expiresAt)}</p>
+            </div>
+          </div>
+          {document.fileUrl && (
+            <a
+              href={document.fileUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-2 rounded-lg border border-slate-600 px-3 py-2 text-xs font-semibold text-slate-200 transition-colors hover:bg-slate-700"
+            >
+              <FileText className="h-3.5 w-3.5" /> View uploaded document
+            </a>
+          )}
+          {rejectionReason && (
+            <div className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-200">
+              <span className="font-bold">Rejection reason:</span> {rejectionReason}
+            </div>
+          )}
+          <p className="text-xs text-slate-500">Replacing a document keeps previous audit history in the system.</p>
+        </div>
+      ) : (
+        <div className="rounded-xl border border-slate-700 bg-slate-900/60 p-4 text-sm text-slate-300">
+          No licence document uploaded yet.
+        </div>
+      )}
+
       <form onSubmit={handleUpload} className="rounded-xl border border-slate-700 bg-slate-900/60 p-4 space-y-3">
         <div className="flex items-center gap-2">
           <Upload className="h-4 w-4 text-emerald-300" />

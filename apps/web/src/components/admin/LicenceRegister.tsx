@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+﻿import { useEffect, useMemo, useState } from "react";
 import { api } from "../../lib/api";
 import { AdminDriverRow, DriverFormInput, SessionState } from "../../types";
 import { DriverFormModal } from "./DriverFormModal";
@@ -9,6 +9,13 @@ interface LicenceRegisterProps {
 
 function licenceDocument(driver: AdminDriverRow) {
   return (driver.documents || []).find((document) => document.type === "driver_license");
+}
+
+function formatDate(value?: string | null) {
+  if (!value) return "Not provided";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Not provided";
+  return date.toLocaleDateString("en-AU");
 }
 
 function expiryStatus(driver: AdminDriverRow) {
@@ -25,19 +32,38 @@ function expiryStatus(driver: AdminDriverRow) {
 
 function verificationStatus(driver: AdminDriverRow) {
   const document = licenceDocument(driver);
-  if (!document) return "Not uploaded";
-  return document.status;
+  if (!document) return "not uploaded";
+  return (document.status || "pending").toLowerCase();
+}
+
+function verificationLabel(status: string) {
+  if (status === "approved") return "Approved";
+  if (status === "rejected") return "Rejected";
+  if (status === "pending") return "Pending";
+  return "Not uploaded";
 }
 
 function yesNo(value: boolean | undefined) {
   return value ? "Yes" : "No";
 }
+
+const FILTERS = [
+  { value: "all", label: "All" },
+  { value: "approved", label: "Approved" },
+  { value: "pending", label: "Pending" },
+  { value: "rejected", label: "Rejected" },
+  { value: "expired", label: "Expired" },
+  { value: "missing", label: "Missing" },
+];
+
 export function LicenceRegister({ session }: LicenceRegisterProps) {
   const [drivers, setDrivers] = useState<AdminDriverRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all");
+  const [page, setPage] = useState(1);
+  const pageSize = 10;
   const [modalDriver, setModalDriver] = useState<AdminDriverRow | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -59,15 +85,21 @@ export function LicenceRegister({ session }: LicenceRegisterProps) {
     void load();
   }, [session]);
 
+  useEffect(() => {
+    setPage(1);
+  }, [search, filter]);
+
   const filteredDrivers = useMemo(() => {
     const query = search.trim().toLowerCase();
     return drivers.filter((driver) => {
       if (query) {
         const haystack = [
           driver.fullName,
+          driver.email,
           driver.licenceNumber,
           driver.issuingState,
-          driver.licenceClass
+          driver.licenceClass,
+          driver.depotLocation,
         ]
           .filter(Boolean)
           .join(" ")
@@ -75,28 +107,38 @@ export function LicenceRegister({ session }: LicenceRegisterProps) {
         if (!haystack.includes(query)) return false;
       }
 
-      const left = Boolean(driver.leftBusiness);
       const expiry = expiryStatus(driver);
       const verification = verificationStatus(driver);
 
       switch (filter) {
-        case "left":
-          return left;
-        case "active":
-          return !left;
-        case "expired":
-          return expiry === "Expired";
-        case "expiring":
-          return expiry === "Expiring";
-        case "verified":
+        case "approved":
           return verification === "approved";
         case "pending":
           return verification === "pending";
+        case "rejected":
+          return verification === "rejected";
+        case "expired":
+          return expiry === "Expired";
+        case "missing":
+          return verification === "not uploaded";
         default:
           return true;
       }
     });
   }, [drivers, search, filter]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredDrivers.length / pageSize));
+  const currentPage = Math.min(page, totalPages);
+  const pagedDrivers = filteredDrivers.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+
+  const summary = useMemo(() => {
+    const total = drivers.length;
+    const approved = drivers.filter((d) => verificationStatus(d) === "approved").length;
+    const pending = drivers.filter((d) => verificationStatus(d) === "pending").length;
+    const expired = drivers.filter((d) => expiryStatus(d) === "Expired").length;
+    const missing = drivers.filter((d) => verificationStatus(d) === "not uploaded").length;
+    return { total, approved, pending, expired, missing };
+  }, [drivers]);
 
   const handleSave = async (input: DriverFormInput & { password?: string }) => {
     setSaving(true);
@@ -104,15 +146,10 @@ export function LicenceRegister({ session }: LicenceRegisterProps) {
     try {
       if (modalDriver) {
         await api.updateDriverByAdmin(session, modalDriver.id, input);
-      } else {
-        const result = (await api.createDriver(session, { ...input, password: input.password ?? "" })) as { userId?: string };
-        if (result?.userId) {
-          await api.updateDriverByAdmin(session, result.userId, input);
-        }
       }
+      await load();
       setIsModalOpen(false);
       setModalDriver(null);
-      await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to save licence register record.");
       throw err;
@@ -120,106 +157,126 @@ export function LicenceRegister({ session }: LicenceRegisterProps) {
       setSaving(false);
     }
   };
-  return (
-    <div className="glass card-hover" style={{ padding: "24px", borderRadius: "18px" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: "12px", flexWrap: "wrap", marginBottom: "16px" }}>
-        <div>
-          <h3 style={{ margin: 0, fontSize: "1.2rem", fontWeight: 700 }}>Licence Register</h3>
-          <p className="muted" style={{ margin: "4px 0 0", fontSize: "0.85rem" }}>
-            Dedicated register of driver licence details, expiry, verification, history and departure status.
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={() => {
-            setModalDriver(null);
-            setIsModalOpen(true);
-          }}
-          style={{ padding: "8px 16px", borderRadius: "8px", border: "none", background: "#1e3a5f", color: "#fff", fontWeight: 700, cursor: "pointer" }}
-        >
-          Add record
-        </button>
-      </div>
 
-      <div style={{ display: "flex", gap: "10px", flexWrap: "wrap", marginBottom: "16px" }}>
-        <input
-          type="search"
-          placeholder="Search driver, licence number, state or type"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          style={{ flex: "1 1 260px", padding: "8px 12px", borderRadius: "8px", border: "1px solid #cbd5e1" }}
-        />
-        <select
-          value={filter}
-          onChange={(e) => setFilter(e.target.value)}
-          style={{ padding: "8px 12px", borderRadius: "8px", border: "1px solid #cbd5e1" }}
-        >
-          <option value="all">All records</option>
-          <option value="active">Not left business</option>
-          <option value="left">Left business</option>
-          <option value="expired">Expired</option>
-          <option value="expiring">Expiring soon</option>
-          <option value="verified">Verified</option>
-          <option value="pending">Pending verification</option>
-        </select>
-        <button
-          type="button"
-          onClick={() => void load()}
-          style={{ padding: "8px 14px", borderRadius: "8px", border: "1px solid #cbd5e1", background: "transparent", cursor: "pointer" }}
-        >
-          Refresh
-        </button>
+  const badgeClass = (tone: "emerald" | "amber" | "rose" | "slate") => {
+    if (tone === "emerald") return "border border-emerald-500/30 bg-emerald-500/10 text-emerald-300";
+    if (tone === "amber") return "border border-amber-500/30 bg-amber-500/10 text-amber-300";
+    if (tone === "rose") return "border border-rose-500/30 bg-rose-500/10 text-rose-300";
+    return "border border-slate-600 bg-slate-700 text-slate-300";
+  };
+
+  return (
+    <div className="space-y-5 text-white">
+      <div>
+        <h3 className="text-xl font-bold">Licence Register</h3>
+        <p className="mt-1 text-sm text-slate-300">
+          Dedicated register of driver licence details, expiry, verification, history and departure status.
+        </p>
       </div>
 
       {error && (
-        <div style={{ marginBottom: "12px", color: "#ef4444", fontSize: "0.85rem" }}>{error}</div>
+        <p role="alert" className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+          {error}
+        </p>
       )}
 
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+        {[
+          { label: "Total Licences", value: summary.total, tone: "slate" as const },
+          { label: "Approved", value: summary.approved, tone: "emerald" as const },
+          { label: "Pending", value: summary.pending, tone: "amber" as const },
+          { label: "Expired", value: summary.expired, tone: "rose" as const },
+          { label: "Missing", value: summary.missing, tone: "slate" as const },
+        ].map((card) => (
+          <div key={card.label} className="rounded-xl border border-slate-700 bg-slate-800/50 p-4">
+            <p className="text-xs font-bold uppercase tracking-wider text-slate-400">{card.label}</p>
+            <p className="mt-2 text-2xl font-black text-white">{card.value}</p>
+          </div>
+        ))}
+      </div>
+
+      <div className="flex flex-wrap items-center gap-3">
+        <input
+          type="search"
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+          placeholder="Search name, licence number, state, class, depot..."
+          className="min-w-[240px] flex-1 rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-white placeholder-slate-500 focus:border-indigo-500 focus:outline-none"
+        />
+        <div className="flex flex-wrap gap-2">
+          {FILTERS.map((item) => (
+            <button
+              key={item.value}
+              type="button"
+              onClick={() => setFilter(item.value)}
+              className={`rounded-lg px-3 py-2 text-xs font-semibold transition-colors ${
+                filter === item.value
+                  ? "border border-emerald-600 bg-emerald-600/20 text-emerald-200"
+                  : "border border-slate-600 text-slate-200 hover:bg-slate-800"
+              }`}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
       {loading ? (
-        <div style={{ padding: "24px", textAlign: "center" }}>Loading licence register...</div>
+        <div className="py-8 text-center text-slate-300">Loading licence register...</div>
       ) : (
-        <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.82rem" }}>
-            <thead>
-              <tr style={{ textAlign: "left", borderBottom: "1px solid #cbd5e1" }}>
-                <th style={{ padding: "8px" }}>Licence No.</th>
-                <th style={{ padding: "8px" }}>Driver Name</th>
-                <th style={{ padding: "8px" }}>State</th>
-                <th style={{ padding: "8px" }}>Date of Birth</th>
-                <th style={{ padding: "8px" }}>Licence Expiry Date</th>
-                <th style={{ padding: "8px" }}>Licence Type</th>
-                <th style={{ padding: "8px" }}>Licence History Provided</th>
-                <th style={{ padding: "8px" }}>Driver Left the Business</th>
-                <th style={{ padding: "8px" }}>Verification Status</th>
-                <th style={{ padding: "8px" }}>Expiry Status</th>
-                <th style={{ padding: "8px" }}>Actions</th>
+        <div className="overflow-x-auto rounded-xl border border-slate-700">
+          <table className="w-full border-collapse text-sm">
+            <thead className="bg-slate-800/80 text-left text-slate-300">
+              <tr>
+                <th className="px-4 py-3">Licence No.</th>
+                <th className="px-4 py-3">Driver Name</th>
+                <th className="px-4 py-3">State</th>
+                <th className="px-4 py-3">Date of Birth</th>
+                <th className="px-4 py-3">Licence Expiry</th>
+                <th className="px-4 py-3">Licence Type</th>
+                <th className="px-4 py-3">History Provided</th>
+                <th className="px-4 py-3">Left Business</th>
+                <th className="px-4 py-3">Verification</th>
+                <th className="px-4 py-3">Expiry Status</th>
+                <th className="px-4 py-3">Actions</th>
               </tr>
             </thead>
             <tbody>
-              {filteredDrivers.map((driver) => {
+              {pagedDrivers.map((driver) => {
                 const document = licenceDocument(driver);
                 const expiry = expiryStatus(driver);
                 const verification = verificationStatus(driver);
+                const verificationTone =
+                  verification === "approved" ? "emerald" : verification === "rejected" ? "rose" : verification === "pending" ? "amber" : "slate";
+                const expiryTone = expiry === "Expired" ? "rose" : expiry === "Expiring" ? "amber" : expiry === "Current" ? "emerald" : "slate";
                 return (
-                  <tr key={driver.id} style={{ borderBottom: "1px solid #e2e8f0" }}>
-                    <td style={{ padding: "8px", fontFamily: "monospace" }}>{driver.licenceNumber || "�"}</td>
-                    <td style={{ padding: "8px" }}>{driver.fullName || "�"}</td>
-                    <td style={{ padding: "8px" }}>{driver.issuingState || "�"}</td>
-                    <td style={{ padding: "8px" }}>{driver.dateOfBirth || "�"}</td>
-                    <td style={{ padding: "8px" }}>{document?.expiresAt ? new Date(document.expiresAt).toLocaleDateString("en-AU") : "�"}</td>
-                    <td style={{ padding: "8px" }}>{driver.licenceClass || "�"}</td>
-                    <td style={{ padding: "8px" }}>{yesNo(driver.licenceHistoryProvided)}</td>
-                    <td style={{ padding: "8px" }}>{yesNo(driver.leftBusiness)}</td>
-                    <td style={{ padding: "8px" }}>{verification}</td>
-                    <td style={{ padding: "8px" }}>{expiry}</td>
-                    <td style={{ padding: "8px" }}>
+                  <tr key={driver.id} className="border-t border-slate-700 hover:bg-slate-800/40">
+                    <td className="px-4 py-3 font-mono">{driver.licenceNumber || "Not provided"}</td>
+                    <td className="px-4 py-3">{driver.fullName || "Not provided"}</td>
+                    <td className="px-4 py-3">{driver.issuingState || "Not provided"}</td>
+                    <td className="px-4 py-3">{formatDate(driver.dateOfBirth)}</td>
+                    <td className="px-4 py-3">{formatDate(document?.expiresAt)}</td>
+                    <td className="px-4 py-3">{driver.licenceClass || "Not provided"}</td>
+                    <td className="px-4 py-3">{yesNo(driver.licenceHistoryProvided)}</td>
+                    <td className="px-4 py-3">{yesNo(driver.leftBusiness)}</td>
+                    <td className="px-4 py-3">
+                      <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-bold ${badgeClass(verificationTone)}`}>
+                        {verificationLabel(verification)}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-bold ${badgeClass(expiryTone)}`}>
+                        {expiry}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3">
                       <button
                         type="button"
                         onClick={() => {
                           setModalDriver(driver);
                           setIsModalOpen(true);
                         }}
-                        style={{ padding: "4px 10px", borderRadius: "6px", border: "1px solid #cbd5e1", background: "transparent", cursor: "pointer" }}
+                        className="rounded-lg border border-slate-600 px-3 py-1.5 text-xs font-semibold text-slate-200 transition-colors hover:bg-slate-700"
                       >
                         Edit
                       </button>
@@ -227,13 +284,41 @@ export function LicenceRegister({ session }: LicenceRegisterProps) {
                   </tr>
                 );
               })}
-              {filteredDrivers.length === 0 && (
+              {pagedDrivers.length === 0 && (
                 <tr>
-                  <td colSpan={11} style={{ padding: "16px", textAlign: "center" }}>No licence register records found.</td>
+                  <td colSpan={11} className="px-4 py-6 text-center text-slate-300">
+                    No licence register records found.
+                  </td>
                 </tr>
               )}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {!loading && filteredDrivers.length > pageSize && (
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-xs text-slate-400">
+            Showing {(currentPage - 1) * pageSize + 1}-{Math.min(currentPage * pageSize, filteredDrivers.length)} of {filteredDrivers.length}
+          </p>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              disabled={currentPage <= 1}
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              className="rounded-lg border border-slate-600 px-3 py-1.5 text-xs font-semibold text-slate-200 disabled:opacity-50"
+            >
+              Previous
+            </button>
+            <button
+              type="button"
+              disabled={currentPage >= totalPages}
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              className="rounded-lg border border-slate-600 px-3 py-1.5 text-xs font-semibold text-slate-200 disabled:opacity-50"
+            >
+              Next
+            </button>
+          </div>
         </div>
       )}
 
@@ -251,4 +336,3 @@ export function LicenceRegister({ session }: LicenceRegisterProps) {
     </div>
   );
 }
-
