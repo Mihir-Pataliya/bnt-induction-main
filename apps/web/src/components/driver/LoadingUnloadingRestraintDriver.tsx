@@ -423,7 +423,7 @@ const viewerRef = useRef<any>(null);
                 ) : attempts.map((a) => (
                   <tr key={a.id} className="border-b border-slate-800">
                     <td className="px-3 py-2">{a.attempt_number}</td>
-                    <td className="px-3 py-2">{a.score}/{a.total_questions}</td>
+                    <td className="px-3 py-2">{a.score > a.total_questions ? Math.round((a.score / 100) * a.total_questions) : a.score}/{a.total_questions}</td>
                     <td className="px-3 py-2">{a.passed ? "Competent" : "Not Competent"}</td>
                     <td className="px-3 py-2">{new Date(a.completed_at).toLocaleString()}</td>
                     <td className="max-w-sm whitespace-pre-wrap px-3 py-2">{a.assessor_feedback || "No feedback yet."}</td>
