@@ -78,14 +78,28 @@ try {
   assert.equal(rows.length, 1);
   assert.equal(rows[0].payload.status, "Draft");
 
+  await page.getByRole("button", { name: "Approval" }).click();
+  const approvalInputs = page.locator("input");
+  await approvalInputs.nth(0).fill("BNT Logistics");
+  await approvalInputs.nth(2).fill("Test Approver");
+  await approvalInputs.nth(3).fill("Director");
+  await approvalInputs.nth(4).fill("Test Signature");
+  await approvalInputs.nth(5).fill("2026-10-31");
+  await approvalInputs.nth(6).fill("2026-10-31");
   await page.getByRole("button", { name: "Approve" }).click();
   await page.getByText("Risk Management Assessment saved.").waitFor();
   assert.equal(rows[0].status, "Submitted");
   assert.equal(rows[0].payload.status, "Approved");
 
   await page.goto("http://127.0.0.1:5202/__rma_test?role=driver");
-  await page.getByRole("button", { name: "Risk Management Assessment" }).click();
+  await page.evaluate(() => {
+    const heading = Array.from(document.querySelectorAll("h2")).find((h) => h.textContent?.includes("Risk Management Assessment"));
+    const panel = heading?.closest(".dashboard-panel");
+    const button = panel?.querySelector("button");
+    button?.click();
+  });
   await page.getByText("Approved", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "Acknowledge assessment" }).waitFor();
   assert.equal(await page.getByRole("button", { name: "Save" }).count(), 0, "Driver view is read-only");
   assert.deepEqual(pageErrors, []);
   console.log("Risk Management Assessment smoke test passed.");
