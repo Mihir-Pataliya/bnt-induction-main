@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { ClipboardCheck, ClipboardList, FileCheck2, LayoutDashboard, Presentation, ShieldCheck } from "lucide-react";
+import { ClipboardCheck, ClipboardList, FileCheck2, LayoutDashboard, ShieldCheck } from "lucide-react";
 import { supabase } from "../../lib/supabase";
 import { api } from "../../lib/api";
 import { SessionState } from "../../types";
@@ -94,7 +94,7 @@ function LurcAssignmentsAdmin({ session }: { session: SessionState }) {
 }
 
 export function LoadingUnloadingRestraintAdmin({ session }: { session: SessionState }) {
-  const [activeTab, setActiveTab] = useState<"overview" | "checklist" | "plan" | "presentation" | "documents" | "assignments" | "questions" | "results">("overview");
+  const [activeTab, setActiveTab] = useState<"overview" | "checklist" | "plan" | "documents" | "assignments" | "questions" | "results">("overview");
   const [counts, setCounts] = useState({ checklists: 0, limiters: 0, trained: 0, results: 0 });
   const [loadingCounts, setLoadingCounts] = useState(true);
   const [overviewError, setOverviewError] = useState("");
@@ -173,7 +173,6 @@ export function LoadingUnloadingRestraintAdmin({ session }: { session: SessionSt
     { id: "overview", label: "Overview", icon: LayoutDashboard },
     { id: "checklist", label: "Loading, Unloading & Restraint Checklist", icon: ClipboardCheck },
     { id: "plan", label: "Safe Loading Plan", icon: ShieldCheck },
-    { id: "presentation", label: "Training Presentation", icon: Presentation },
     { id: "questions", label: "Assessment Questions", icon: ClipboardList },
     { id: "results", label: "Driver Results", icon: FileCheck2 }
   ] as const;
@@ -225,26 +224,6 @@ export function LoadingUnloadingRestraintAdmin({ session }: { session: SessionSt
       {activeTab === "plan" && <LoadingSafePlanManager session={session} mode="admin" />}
       {activeTab === "documents" && <LurcDocumentsAdmin session={session} />}
       {activeTab === "assignments" && <LurcAssignmentsAdmin session={session} />}
-
-      {activeTab === "presentation" && (
-        <div className="space-y-4 rounded-xl border border-slate-700 bg-slate-800/50 p-5">
-          <h3 className="text-lg font-bold text-white">Training Presentation</h3>
-          <p className="text-sm text-slate-300">Approved Loading, Unloading & Restraint Compliance presentation. Version 8.1, May 2026.</p>
-          {presentationLoadError && <p role="alert" className="text-sm text-red-300">{presentationLoadError}</p>}
-          <label className="block text-sm font-semibold text-slate-200">
-            Presentation URL
-            <input className="mt-1 w-full rounded-lg border border-slate-600 bg-slate-900 px-3 py-2 text-white" value={presentationUrl} onChange={(e) => setPresentationUrl(e.target.value)} placeholder="https://..." />
-          </label>
-          <label className="block text-sm font-semibold text-slate-200">
-            Version
-            <input className="mt-1 w-full rounded-lg border border-slate-600 bg-slate-900 px-3 py-2 text-white" value={presentationVersion} onChange={(e) => setPresentationVersion(e.target.value)} />
-          </label>
-          <button type="button" onClick={savePresentation} disabled={savingPresentation} className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-500 disabled:opacity-50">
-            {savingPresentation ? "Saving..." : "Save Presentation Details"}
-          </button>
-          {presentationMessage && <p className="text-sm text-slate-300">{presentationMessage}</p>}
-        </div>
-      )}
       {activeTab === "questions" && <LoadingUnloadingRestraintAssessmentAdmin session={session} view="questions" />}
       {activeTab === "results" && <LoadingUnloadingRestraintAssessmentAdmin session={session} view="results" />}
     </div>
