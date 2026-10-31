@@ -174,8 +174,6 @@ export function LoadingUnloadingRestraintAdmin({ session }: { session: SessionSt
     { id: "checklist", label: "Loading, Unloading & Restraint Checklist", icon: ClipboardCheck },
     { id: "plan", label: "Safe Loading Plan", icon: ShieldCheck },
     { id: "presentation", label: "Training Presentation", icon: Presentation },
-    { id: "documents", label: "Documents", icon: FileCheck2 },
-    { id: "assignments", label: "Training Assignments", icon: ClipboardList },
     { id: "questions", label: "Assessment Questions", icon: ClipboardList },
     { id: "results", label: "Driver Results", icon: FileCheck2 }
   ] as const;
