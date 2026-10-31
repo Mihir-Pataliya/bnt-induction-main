@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
-import { ArrowRight, BookOpen, ClipboardCheck, ClipboardList, History, ShieldCheck, Bell } from "lucide-react";
-import QRCode from "qrcode";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { PPTXViewer } from "pptxviewjs";
+import { ArrowRight, BookOpen, ChevronLeft, ChevronRight, ClipboardCheck, ClipboardList, History, Maximize2, Minus, Plus, ShieldCheck, Bell } from "lucide-react";
 import { api } from "../../lib/api";
 import { supabase } from "../../lib/supabase";
+import QRCode from "qrcode";
 import { SessionState } from "../../types";
 import { LoadingUnloadingRestraintChecklist } from "../admin/LoadingUnloadingRestraintChecklist";
 import { DriverNotifications } from "./DriverNotifications";
@@ -64,6 +65,13 @@ export function LoadingUnloadingRestraintDriver({ session }: { session: SessionS
   const [qrDataUrl, setQrDataUrl] = useState("");
   const [historyError, setHistoryError] = useState("");
   const [presentationError, setPresentationError] = useState("");
+const [presentationLoading, setPresentationLoading] = useState(false);
+const [slideCount, setSlideCount] = useState(0);
+const [currentSlide, setCurrentSlide] = useState(0);
+const [zoom, setZoom] = useState(1);
+const canvasRef = useRef<HTMLCanvasElement | null>(null);
+const viewerRef = useRef<any>(null);
+  const [iframeLoaded, setIframeLoaded] = useState(false);
 
   const loadQuestions = useCallback(async () => {
     setLoading(true);
@@ -88,13 +96,24 @@ export function LoadingUnloadingRestraintDriver({ session }: { session: SessionS
         .maybeSingle();
       if (queryError) throw queryError;
       const payload = (data?.payload || {}) as Record<string, unknown>;
-      if (payload.url) setPresentationUrl(String(payload.url));
       if (payload.version) setPresentationVersion(String(payload.version));
       setPresentationError("");
+      try {
+        const url = await api.getLoadingPresentationUrl(session);
+        if (url) {
+          setPresentationUrl(url);
+        } else {
+          setPresentationUrl("");
+          setPresentationError("Presentation not configured by administrator.");
+        }
+      } catch (e) {
+        setPresentationUrl("");
+        setPresentationError(e instanceof Error ? e.message : "Unable to load the approved presentation.");
+      }
     } catch (e) {
       setPresentationError(e instanceof Error ? e.message : "Unable to load the approved presentation.");
     }
-  }, []);
+  }, [session]);
 
   const loadAttempts = useCallback(async () => {
     try {
@@ -113,12 +132,41 @@ export function LoadingUnloadingRestraintDriver({ session }: { session: SessionS
   }, [loadQuestions, loadPresentation, loadAttempts]);
 
   useEffect(() => {
-    if (presentationUrl) {
-      QRCode.toDataURL(presentationUrl, { width: 160 }).then(setQrDataUrl).catch((e: unknown) => {
-        setQrDataUrl("");
-        setPresentationError(e instanceof Error ? e.message : "Unable to create the presentation QR code.");
-      });
-    }
+    if (!presentationUrl) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    let cancelled = false;
+    const viewer = new PPTXViewer({ canvas, autoExposeGlobals: true });
+    viewerRef.current = viewer;
+    setPresentationLoading(true);
+    setPresentationError("");
+    setSlideCount(0);
+    setCurrentSlide(0);
+    viewer.on("loadComplete", ({ slideCount: count }: any) => {
+      if (cancelled) return;
+      setSlideCount(count || 0);
+      setPresentationLoading(false);
+      viewer.render(canvas).catch(() => {});
+    });
+    viewer.on("slideChanged", (index: any) => {
+      if (cancelled) return;
+      setCurrentSlide(index);
+    });
+    (async () => {
+      try {
+        await viewer.loadFromUrl(presentationUrl);
+        if (cancelled) return;
+        await viewer.render(canvas);
+      } catch (e) {
+        if (cancelled) return;
+        setPresentationLoading(false);
+        setPresentationError(e instanceof Error ? e.message : "Unable to load the presentation.");
+      }
+    })();
+    return () => {
+      cancelled = true;
+      viewerRef.current = null;
+    };
   }, [presentationUrl]);
 
   const submit = async () => {
@@ -181,14 +229,107 @@ export function LoadingUnloadingRestraintDriver({ session }: { session: SessionS
           {presentationError && <p role="alert" className="text-sm text-red-300">{presentationError}</p>}
           <p className="text-sm text-slate-300">{presentationVersion}</p>
           {presentationUrl ? (
-            <div className="flex flex-col items-start gap-4 md:flex-row">
-              <a href={presentationUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 rounded-lg bg-green-600 px-4 py-2 text-sm font-semibold text-white hover:bg-green-500">
-                Open Presentation
-              </a>
-              {qrDataUrl && <img src={qrDataUrl} alt="Presentation QR code" className="h-40 w-40 rounded-lg border border-slate-700" />}
+            <div className="space-y-3">
+              <div
+                style={{
+                  position: "relative",
+                  width: "100%",
+                  height: "600px",
+                  borderRadius: "12px",
+                  border: "1px solid #334155",
+                  overflow: "hidden",
+                  background: "#020617"
+                }}
+              >
+                {presentationLoading && (
+                  <div
+                    style={{
+                      position: "absolute",
+                      inset: 0,
+                      zIndex: 10,
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      background: "#020617",
+                      color: "#94a3b8",
+                      fontSize: "0.875rem"
+                    }}
+                  >
+                    Loading presentation…
+                  </div>
+                )}
+                {presentationError ? (
+                  <div className="absolute inset-0 flex items-center justify-center p-4 text-center text-sm text-red-300">
+                    {presentationError}
+                  </div>
+                ) : (
+                  <canvas
+                    ref={canvasRef}
+                    className="h-full w-full bg-white"
+                    style={{ display: "block" }}
+                  />
+                )}
+              </div>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => viewerRef.current?.previousSlide(canvasRef.current)}
+                    disabled={currentSlide <= 0}
+                    className="rounded-lg border border-slate-600 px-3 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-800 disabled:opacity-50"
+                  >
+                    <ChevronLeft className="h-4 w-4" />
+                  </button>
+                  <span className="text-sm text-slate-300">
+                    {slideCount > 0 ? `${currentSlide + 1} of ${slideCount}` : "Loading..."}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => viewerRef.current?.nextSlide(canvasRef.current)}
+                    disabled={slideCount === 0 || currentSlide >= slideCount - 1}
+                    className="rounded-lg border border-slate-600 px-3 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-800 disabled:opacity-50"
+                  >
+                    <ChevronRight className="h-4 w-4" />
+                  </button>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const next = Math.max(0.5, zoom - 0.25);
+                      setZoom(next);
+                      viewerRef.current?.render(canvasRef.current, { scale: next }).catch(() => {});
+                    }}
+                    className="rounded-lg border border-slate-600 px-3 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-800"
+                  >
+                    <Minus className="h-4 w-4" />
+                  </button>
+                  <span className="text-sm text-slate-300">{Math.round(zoom * 100)}%</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const next = Math.min(3, zoom + 0.25);
+                      setZoom(next);
+                      viewerRef.current?.render(canvasRef.current, { scale: next }).catch(() => {});
+                    }}
+                    className="rounded-lg border border-slate-600 px-3 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-800"
+                  >
+                    <Plus className="h-4 w-4" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => canvasRef.current?.requestFullscreen?.()}
+                    className="rounded-lg border border-slate-600 px-3 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-800"
+                  >
+                    <Maximize2 className="h-4 w-4" />
+                  </button>
+                </div>
+              </div>
             </div>
           ) : (
-            <p className="text-sm text-slate-400">Presentation link not configured by administrator.</p>
+            <p className="text-sm text-slate-400">
+              {presentationError || "Presentation not configured by administrator."}
+            </p>
           )}
         </div>
       )}

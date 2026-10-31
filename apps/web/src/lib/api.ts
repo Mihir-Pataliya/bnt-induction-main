@@ -2513,6 +2513,13 @@ export const api = {
     const data = await response.json();
     return Array.isArray(data) ? data : [];
   },
+  async getLoadingPresentationUrl(session: SessionState): Promise<string> {
+    if (!session) throw new Error("Unauthorized");
+    const response = await fetch(`${apiBaseUrl}/loading-presentation/url`, { headers: { Authorization: `Bearer ${session.accessToken}` } });
+    if (!response.ok) throw new Error("Unable to load presentation.");
+    const data = await response.json();
+    return data?.url || "";
+  },
   async getLoadingUnloadingRestraintQuestions(session: SessionState): Promise<any[]> {
     const result = await adminRequest<{ questions: any[] }>(`/admin/loading-unloading-restraint-compliance/questions`, session, { method: "GET" });
     return result.questions ?? [];

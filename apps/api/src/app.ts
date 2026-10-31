@@ -9183,4 +9183,23 @@ app.get("/api/admin/speed-checklist/reviews/:submissionId", requireAdmin, async 
   } catch (error) { next(error); }
 });
 
+app.get("/api/loading-presentation/url", async (request: AdminRequest, response, next) => {
+  try {
+    const header = request.headers.authorization;
+    if (!header?.startsWith("Bearer ")) { response.status(401).json({ message: "Authentication required." }); return; }
+    const auth = await verifySessionToken(header.slice("Bearer ".length));
+    if (auth.unavailable) { response.status(503).json({ message: "Unable to reach Supabase Auth." }); return; }
+    if (!auth.user) { response.status(401).json({ message: "Invalid session." }); return; }
+    const { data: profile, error: profileError } = await supabaseAdmin.from("profiles").select("role").eq("id", auth.user.id).maybeSingle();
+    if (profileError || !profile || (profile.role !== "admin" && profile.role !== "driver")) {
+      response.status(403).json({ message: "Access denied." }); return;
+    }
+    const { data, error } = await supabaseAdmin.storage
+      .from("loading-presentations")
+      .createSignedUrl("BNT_Loading_Unloading_Restraint_Checklist_Presentation_v2.pptx", 3600);
+    if (error || !data?.signedUrl) throw error || new Error("Unable to generate signed URL.");
+    response.json({ url: data.signedUrl });
+  } catch (error) { next(error); }
+});
+
 export { app };
