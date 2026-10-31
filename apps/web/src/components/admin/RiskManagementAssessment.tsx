@@ -493,6 +493,21 @@ const approve = async () => {
                 )}
                 {success && <p className='text-sm text-emerald-400'>{success}</p>}
               </div>
+              <div className='rounded-2xl border border-slate-700 bg-slate-800/40 p-4 space-y-3'>
+                <h4 className='text-base font-bold text-white'>Acknowledgement history</h4>
+                {acknowledgements.length === 0 && <p className='text-sm text-slate-300'>No acknowledgement records yet.</p>}
+                <div className='space-y-2'>
+                  {acknowledgements.map((ack) => (
+                    <div key={ack.id} className='rounded-xl border border-slate-700 bg-slate-900/60 p-3 text-sm text-slate-300 space-y-1'>
+                      <p>Company: <span className='font-semibold text-white'>{ack.payload?.companyName || '-'}</span></p>
+                      <p>Version: <span className='font-semibold text-white'>{ack.payload?.assessmentVersion ?? '-'}</span></p>
+                      <p>Driver: <span className='font-semibold text-white'>{ack.payload?.driverName || '-'}</span></p>
+                      <p>Signature: <span className='font-semibold text-white'>{ack.payload?.signature || '-'}</span></p>
+                      <p>Date: <span className='font-semibold text-white'>{ack.payload?.date || ack.payload?.acknowledgedAt || '-'}</span></p>
+                    </div>
+                  ))}
+                </div>
+              </div>
             </div>
           )}
         </div>
