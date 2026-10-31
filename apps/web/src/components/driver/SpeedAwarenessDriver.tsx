@@ -109,7 +109,7 @@ export function SpeedAwarenessDriver({ session }: { session: SessionState }) {
       setPresentationLoading(false);
       viewer.render(canvas).catch(() => {});
     });
-    viewer.on("slideChanged", (index: number) => {
+    viewer.on("slideChanged", (index: any) => {
       if (cancelled) return;
       setCurrentSlide(index);
     });

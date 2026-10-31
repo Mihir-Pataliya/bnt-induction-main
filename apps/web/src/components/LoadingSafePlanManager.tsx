@@ -108,6 +108,56 @@ export function LoadingSafePlanManager({ session, mode }: { session: SessionStat
     setDriverNotes(payload.driverNotes || "");
     setResponseMessage("");
   }, [viewing, isAdmin]);
+  useEffect(() => {
+    if (!viewing) return;
+    setReviewNotes(viewing.review_notes || "");
+  }, [viewing]);
+  const openEvidence = async (path: string) => {
+    try {
+      const { data } = await supabase.storage.from("driver-documents").createSignedUrl(path, 3600);
+      if (data?.signedUrl) window.open(data.signedUrl, "_blank");
+    } catch {
+      setResponseMessage("Unable to open evidence photo.");
+    }
+  };
+  const reviewPlan = async (nextStatus: "Under Review" | "Resolved") => {
+    if (!viewing) return;
+    setResponseMessage("");
+    try {
+      const { error } = await supabase
+        .from("cor_form_submissions")
+        .update({
+          status: nextStatus,
+          reviewed_at: new Date().toISOString(),
+          reviewed_by: session.user.id,
+          review_notes: reviewNotes
+        })
+        .eq("id", viewing.id);
+      if (error) throw error;
+      const driverId = viewing.user_id;
+      try {
+        if (driverId) {
+          await api.sendFatigueFeedback(session, driverId, {
+            subject: "Safe Loading Plan Review",
+            message: `${reviewNotes || `Your Safe Loading Plan has been marked ${nextStatus}.`}\n\nStatus: ${nextStatus}`,
+            messageType: nextStatus === "Resolved" ? "Safe Loading Plan Resolved" : "Safe Loading Plan Under Review",
+            requiredAction: `OPEN_SAFE_LOADING_PLAN:${viewing.id}`,
+            module: "loading"
+          });
+        }
+      } catch (notificationError) {
+        console.error("Unable to send safe loading plan notification", notificationError);
+      }
+      setResponseMessage(nextStatus === "Resolved" ? "Review completed." : "Corrections requested.");
+      await load();
+      const updated = (await supabase.from("cor_form_submissions").select("*").eq("id", viewing.id).maybeSingle()).data;
+      if (updated) setViewing(updated);
+    } catch (error: any) {
+      setResponseMessage(error?.message || "Unable to review plan.");
+    }
+  };
+
+
   const updateDriverResponse = async (status?: string) => {
     if (!viewing) return;
     setResponseMessage("");
@@ -277,6 +327,67 @@ export function LoadingSafePlanManager({ session, mode }: { session: SessionStat
         <p><strong>Assigned Driver:</strong> {viewing.payload?.driverName || "-"}</p>
         <p><strong>Vehicle:</strong> {viewing.payload?.vehicle || "-"}</p>
         <p><strong>Status:</strong> {viewing.status}</p>
+        {!isAdmin && viewing.review_notes && (
+          <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 space-y-1">
+            <h5 className="font-bold text-amber-200">Admin Feedback</h5>
+            <p className="whitespace-pre-wrap text-slate-200">{viewing.review_notes}</p>
+            {viewing.reviewed_at && <p className="text-xs text-slate-400">Reviewed {new Date(viewing.reviewed_at).toLocaleString()}</p>}
+          </div>
+        )}
+        {isAdmin && (
+          <div className="space-y-4 border-t border-slate-700 pt-4">
+            <h5 className="font-bold text-white">Driver Submission</h5>
+            {viewing.payload?.acknowledgedAt && <p><strong>Acknowledged:</strong> {new Date(viewing.payload.acknowledgedAt).toLocaleString()}</p>}
+            {viewing.payload?.driverSubmittedAt && <p><strong>Submitted:</strong> {new Date(viewing.payload.driverSubmittedAt).toLocaleString()}</p>}
+            {Array.isArray(viewing.payload?.safetyChecks) && viewing.payload.safetyChecks.length > 0 && (
+              <div className="space-y-2">
+                <h6 className="font-semibold text-slate-200">Safety Checks</h6>
+                {viewing.payload.safetyChecks.map((check: any, index: number) => (
+                  <div key={index} className="rounded-lg border border-slate-700 bg-slate-950/40 p-2">
+                    <p className="text-slate-100">{check.item}</p>
+                    <p className="text-xs text-slate-400">Status: {check.status}</p>
+                    {check.comment && <p className="text-xs text-slate-300">Comment: {check.comment}</p>}
+                  </div>
+                ))}
+              </div>
+            )}
+            {Array.isArray(viewing.payload?.evidenceUrls) && viewing.payload.evidenceUrls.length > 0 && (
+              <div className="space-y-2">
+                <h6 className="font-semibold text-slate-200">Photo Evidence</h6>
+                <ul className="list-disc pl-5 text-slate-300">
+                  {viewing.payload.evidenceUrls.map((path: string) => (
+                    <li key={path}>
+                      <button type="button" onClick={() => void openEvidence(path)} className="text-sky-300 underline">{path.split("/").pop()}</button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {viewing.payload?.issueReport?.description && (
+              <div className="space-y-1">
+                <h6 className="font-semibold text-slate-200">Reported Issue</h6>
+                <p className="text-slate-300">{viewing.payload.issueReport.type}: {viewing.payload.issueReport.description}</p>
+                {viewing.payload.issueReport.reportedAt && <p className="text-xs text-slate-400">{new Date(viewing.payload.issueReport.reportedAt).toLocaleString()}</p>}
+              </div>
+            )}
+            {viewing.payload?.driverNotes && (
+              <div className="space-y-1">
+                <h6 className="font-semibold text-slate-200">Driver Notes</h6>
+                <p className="whitespace-pre-wrap text-slate-300">{viewing.payload.driverNotes}</p>
+              </div>
+            )}
+            <label className="block space-y-1">
+              <span className="font-medium text-slate-200">Review notes</span>
+              <textarea value={reviewNotes} onChange={(e) => setReviewNotes(e.target.value)} className="min-h-20 w-full rounded-lg border border-slate-600 bg-slate-900 px-3 py-2 text-white" />
+            </label>
+            {viewing.reviewed_at && <p className="text-xs text-slate-400">Last reviewed {new Date(viewing.reviewed_at).toLocaleString()}</p>}
+            <div className="flex flex-wrap gap-2">
+              <button type="button" onClick={() => void reviewPlan("Under Review")} disabled={viewing.status === "Resolved" || viewing.status === "Completed"} className="rounded-lg bg-amber-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">Request Corrections</button>
+              <button type="button" onClick={() => void reviewPlan("Resolved")} disabled={viewing.status === "Resolved" || viewing.status === "Completed"} className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">Complete Review</button>
+            </div>
+            {responseMessage && <p className="text-sm text-slate-300">{responseMessage}</p>}
+          </div>
+        )}
         {!isAdmin && (
           <div className="space-y-4 border-t border-slate-700 pt-4">
             <div className="flex flex-wrap gap-2">
@@ -321,7 +432,7 @@ export function LoadingSafePlanManager({ session, mode }: { session: SessionStat
             </label>
             <div className="flex flex-wrap gap-2">
               <button type="button" onClick={() => updateDriverResponse()} className="rounded-lg border border-slate-600 px-4 py-2 text-sm text-white">Save Progress</button>
-              <button type="button" onClick={() => updateDriverResponse("Submitted")} disabled={viewing.status === "Submitted" || viewing.status === "Under Review" || viewing.status === "Resolved" || viewing.status === "Completed"} className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">Submit Confirmation</button>
+              <button type="button" onClick={() => updateDriverResponse("Submitted")} disabled={viewing.status === "Submitted" || viewing.status === "Resolved" || viewing.status === "Completed"} className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">Submit Confirmation</button>
             </div>
             {responseMessage && <p className="text-sm text-slate-300">{responseMessage}</p>}
           </div>

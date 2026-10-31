@@ -149,22 +149,27 @@ export function FatigueAwarenessAdmin({ session }: { session: any }) {
   useEffect(() => {
     if (!feedbackDriverId) { setDriverMessages([]); return; }
     setLoadingMessages(true);
-    api.getFatigueDriverMessages(session, feedbackDriverId)
-      .then(async (m) => {
+    let cancelled = false;
+    const loadMessages = async () => {
+      try {
+        const m = await api.getFatigueDriverMessages(session, feedbackDriverId);
+        if (cancelled) return;
         const unreadDriver = m.filter((msg: any) => msg.sender_id !== session?.user?.id && msg.status === "Unread").map((msg: any) => msg.id);
         setNewReplyIds(new Set(unreadDriver));
         setDriverMessages(m);
-        // mark driver replies as read
         for (const msg of m) {
           if (msg.sender_id !== session?.user?.id && msg.status === "Unread") {
             try { await api.markFatigueMessageReadAdmin(session, msg.id); } catch {}
           }
         }
         const refreshed = await api.getFatigueDriverMessages(session, feedbackDriverId);
-        setDriverMessages(refreshed);
-      })
-      .catch(() => setDriverMessages([]))
-      .finally(() => setLoadingMessages(false));
+        if (!cancelled) setDriverMessages(refreshed);
+      } catch { if (!cancelled) setDriverMessages([]); }
+      finally { if (!cancelled) setLoadingMessages(false); }
+    };
+    void loadMessages();
+    const interval = setInterval(() => { void loadMessages(); }, 5000);
+    return () => { cancelled = true; clearInterval(interval); };
   }, [feedbackDriverId, session]);
 
   const startNew = () => {
