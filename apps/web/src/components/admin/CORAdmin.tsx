@@ -35,6 +35,7 @@ import { DriverFatigueWorkRecordAuditInformation } from "./DriverFatigueWorkReco
 import { SafeDrivingPlanManager } from "./SafeDrivingPlanManager";
 import { RiskManagementAssessment } from "./RiskManagementAssessment";
 import { FatigueChecklist } from "./FatigueChecklist";
+import { AdminFatigueMonitoring } from "./AdminFatigueMonitoring";
 import { VehicleStandardsAdmin } from "./VehicleStandardsAdmin";
 import { ThirdPartiesSubcontractorsAdmin } from "./ThirdPartiesSubcontractorsAdmin";
 import { NonConformanceAdmin } from "./NonConformanceAdmin";
@@ -122,6 +123,7 @@ const [licenceRegisterExpanded, setLicenceRegisterExpanded] = useState(false);
   const [safeDrivingPlansExpanded, setSafeDrivingPlansExpanded] = useState(false);
   const [riskManagementExpanded, setRiskManagementExpanded] = useState(false);
   const [fatigueChecklistExpanded, setFatigueChecklistExpanded] = useState(false);
+  const [fatigueMonitoringExpanded, setFatigueMonitoringExpanded] = useState(false);
   const [annualReviewExpanded, setAnnualReviewExpanded] = useState(false);
   const [quarterlyReviewExpanded, setQuarterlyReviewExpanded] = useState(false);
 
@@ -461,6 +463,19 @@ const [licenceRegisterExpanded, setLicenceRegisterExpanded] = useState(false);
           />
         </button>
         {fatigueChecklistExpanded && <FatigueChecklist session={session} />}
+      </div>
+
+      <div>
+        <button
+          type="button"
+          onClick={() => setFatigueMonitoringExpanded((expanded) => !expanded)}
+          aria-expanded={fatigueMonitoringExpanded}
+          className="mb-4 flex w-full items-center justify-between rounded-xl border border-slate-700 bg-slate-800/50 px-5 py-4 text-left transition-colors hover:border-emerald-500/50 hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400"
+        >
+          <span className="text-2xl font-black text-white">Driver Fatigue Monitoring</span>
+          <ChevronDown className={`h-5 w-5 text-emerald-300 transition-transform ${fatigueMonitoringExpanded ? "rotate-180" : ""}`} aria-hidden="true" />
+        </button>
+        {fatigueMonitoringExpanded && <AdminFatigueMonitoring session={session} />}
       </div>
 
       <div>

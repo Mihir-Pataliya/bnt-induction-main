@@ -1,4 +1,4 @@
-"use client";
+ï»¿"use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ClipboardCheck, Loader2, Pencil, Plus, Save, Send, ShieldCheck } from "lucide-react";
@@ -160,7 +160,7 @@ function inputClass(disabled = false): string {
 }
 
 function dateLabel(value: string | null | undefined): string {
-  if (!value) return "—";
+  if (!value) return "Ã¯Â¿Â½";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleDateString();
@@ -225,6 +225,32 @@ function dateLabel(value: string | null | undefined): string {
     setReadOnly(false);
     void loadRows();
   };
+  const printChecklist = () => {
+    const printWindow = window.open("", "_blank", "width=900,height=700");
+    if (!printWindow) return;
+    const answersHtml = ALL_QUESTIONS.map((q) => {
+      const answer = state.answers[q.id] || "Not answered";
+      const note = state.questionNotes[q.id] || "";
+      return `<tr><td style="padding:8px;border:1px solid #ccc;">${q.text}</td><td style="padding:8px;border:1px solid #ccc;">${answer}</td><td style="padding:8px;border:1px solid #ccc;">${note || "-"}</td></tr>`;
+    }).join("");
+    const html = `<!DOCTYPE html><html><head><title>Fatigue Checklist</title></head><body style="font-family:Arial,sans-serif;padding:24px;">
+      <h1>Fatigue Checklist</h1>
+      <p><strong>Completed By:</strong> ${state.completedBy || "Not provided"}</p>
+      <p><strong>Role:</strong> ${state.role || "Not provided"}</p>
+      <p><strong>Signature:</strong> ${state.signature || "Not provided"}</p>
+      <p><strong>Date:</strong> ${state.date || "Not provided"}</p>
+      <p><strong>Status:</strong> ${status}</p>
+      <p><strong>General Notes:</strong> ${state.generalNotes || "Not provided"}</p>
+      <table style="width:100%;border-collapse:collapse;margin-top:16px;">
+        <thead><tr><th style="padding:8px;border:1px solid #ccc;text-align:left;">Question</th><th style="padding:8px;border:1px solid #ccc;text-align:left;">Answer</th><th style="padding:8px;border:1px solid #ccc;text-align:left;">Notes / Actions</th></tr></thead>
+        <tbody>${answersHtml}</tbody>
+      </table>
+      <script>window.onload=function(){window.print();};</script>
+    </body></html>`;
+    printWindow.document.write(html);
+    printWindow.document.close();
+  };
+
 
   const updateAnswer = (questionId: string, value: Answer) => {
     setState((prev) => ({ ...prev, answers: { ...prev.answers, [questionId]: value } }));
@@ -314,6 +340,14 @@ function dateLabel(value: string | null | undefined): string {
           >
             Back to list
           </button>
+          <button
+            type="button"
+            onClick={printChecklist}
+            className="inline-flex items-center gap-2 rounded-lg border border-slate-600 px-3 py-2 text-sm font-semibold text-slate-200 transition-colors hover:bg-slate-800"
+          >
+            Print / Save as PDF
+          </button>
+
         </div>
 
         {error && <div className="rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200">{error}</div>}
@@ -462,7 +496,7 @@ function dateLabel(value: string | null | undefined): string {
       {success && <div className="rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">{success}</div>}
 
       {loading ? (
-        <p role="status" className="text-sm text-slate-300">Loading fatigue checklists…</p>
+        <p role="status" className="text-sm text-slate-300">Loading fatigue checklists...</p>
       ) : rows.length === 0 ? (
         <p className="rounded-xl border border-slate-700 p-5 text-sm text-slate-400">
           No fatigue checklists have been created yet.
@@ -472,17 +506,14 @@ function dateLabel(value: string | null | undefined): string {
           {rows.map((row) => {
             const payload = (row.payload || {}) as Record<string, unknown>;
             return (
-              <article key={row.id} className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-slate-700 bg-slate-900 p-4 text-white">
+              <article key={row.id} className="flex flex-col gap-4 rounded-xl border border-slate-700 bg-slate-900 p-4 text-white md:flex-row md:items-center md:justify-between">
                 <div>
                   <h3 className="font-bold">
                     Fatigue Checklist
-                    {payload.completedBy ? ` · ${String(payload.completedBy)}` : ""}
                   </h3>
-                  <p className="mt-1 text-xs text-slate-400">
-                    {payload.date ? `Date ${String(payload.date)}` : `Updated ${dateLabel(row.submitted_at)}`}
-                    {" · "}
-                    {row.status === "Submitted" ? `Submitted ${dateLabel(row.submitted_at)}` : "Draft"}
-                  </p>
+                  <p className="mt-1 text-xs text-slate-400">Submitted By: {String(payload.completedBy || "Not provided")}</p>
+                  <p className="mt-1 text-xs text-slate-400">Submission Date/Time: {dateLabel(row.submitted_at)}</p>
+                  <p className="mt-1 text-xs text-slate-400">Status: {row.status === "Submitted" ? "Submitted" : "Draft"}</p>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
                   <span className={`rounded-full px-3 py-1 text-xs font-bold ${statusBadgeClass(row.status)}`}>
@@ -505,3 +536,6 @@ function dateLabel(value: string | null | undefined): string {
     </section>
   );
 }
+
+
+

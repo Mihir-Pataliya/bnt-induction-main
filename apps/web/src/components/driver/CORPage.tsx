@@ -10,6 +10,7 @@ import { LoadingUnloadingRestraintDriver } from "./LoadingUnloadingRestraintDriv
 import { DriverFatigueWorkRecordAudit } from "./DriverFatigueWorkRecordAudit";
 import { SafeDrivingPlanManager } from "../admin/SafeDrivingPlanManager";
 import { RiskManagementAssessment } from "../admin/RiskManagementAssessment";
+import { DriverFatigueChecklist } from "./DriverFatigueChecklist";
 import { MyLicence } from "./MyLicence";
 import { VehicleStandardsDriver } from "./VehicleStandardsDriver";
 import { DriverMassDimensionAwareness } from "./DriverMassDimensionAwareness";
@@ -23,6 +24,7 @@ export function CORPage({ driverBundle, session, onNavigateTab, onRefreshDriverB
   const [showInductionHandout, setShowInductionHandout] = useState(false);
   const [showTrainingCalendar, setShowTrainingCalendar] = useState(false);
   const [showFatigue, setShowFatigue] = useState(false);
+  const [showFatigueChecklist, setShowFatigueChecklist] = useState(false);
   const [showDistraction, setShowDistraction] = useState(false);
   const [showSpeed, setShowSpeed] = useState(false);
   const [showLoadingUnloadingRestraint, setShowLoadingUnloadingRestraint] = useState(false);
@@ -87,6 +89,8 @@ export function CORPage({ driverBundle, session, onNavigateTab, onRefreshDriverB
       {panel("Safe Driving Plans", "Safe driving plans.", <FileText className="w-5 h-5" />, showMyTrips, setShowMyTrips, session ? <SafeDrivingPlanManager session={session} mode="driver" /> : <p className="text-slate-300">Please sign in again.</p>)}
 
       {panel("Risk Management Assessment", "Risk management assessment.", <ShieldCheck className="w-5 h-5" />, showRiskManagement, setShowRiskManagement, session ? <RiskManagementAssessment session={session} mode="driver" /> : <p className="text-slate-300">Please sign in again.</p>)}
+
+      {panel("Fatigue Checklist", "Pre-trip fatigue checklist.", <ClipboardCheck className="w-5 h-5" />, showFatigueChecklist, setShowFatigueChecklist, session ? <DriverFatigueChecklist session={session} driverBundle={driverBundle} /> : <p className="text-slate-300">Please sign in again.</p>)}
 
       {panel("My Licence", "Manage your licence details.", <FileText className="w-5 h-5" />, showMyLicence, setShowMyLicence, session ? <MyLicence session={session} driverBundle={driverBundle} onRefresh={onRefreshDriverBundle} /> : <p className="text-slate-300">Please sign in again.</p>)}
 
